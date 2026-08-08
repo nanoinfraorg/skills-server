@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/api"
+	"github.com/nanoinfraorg/skills-server/internal/auth"
 	"github.com/nanoinfraorg/skills-server/internal/config"
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/scan"
@@ -56,23 +57,39 @@ func main() {
 		LLMModel:   cfg.LLMModel,
 	}
 
-	handler := &api.Handler{
-		Store:          db,
-		Publisher:      ghClient,
-		Logger:         logger,
-		SubmitterToken: cfg.SubmitterToken,
-		AdminToken:     cfg.AdminToken,
-		SubmissionsDir: cfg.SubmissionsDir,
-		PublishedDir:   cfg.PublishedDir,
-		GitHubRepo:     cfg.GitHubRepo,
-		ScanConfig:     scanConfig,
-	}
-
 	// ctx is canceled on SIGINT/SIGTERM, giving the daily scan scheduler (a
 	// background goroutine with no other way to know the process is
 	// stopping) a clean way to stop its ticker loop.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// NewGoogleVerifier makes a network call (OIDC discovery against
+	// Google) once at startup; a failure here (e.g. no network, or a
+	// misconfigured GOOGLE_CLIENT_ID) is treated the same as a missing
+	// required secret -- fail loud, don't start in a half-working state.
+	idTokenVerifier, err := auth.NewGoogleVerifier(ctx, cfg.GoogleClientID)
+	if err != nil {
+		logger.Error("discover google oidc provider", "error", err)
+		os.Exit(1)
+	}
+
+	handler := &api.Handler{
+		Store:             db,
+		Publisher:         ghClient,
+		Logger:            logger,
+		SubmitterToken:    cfg.SubmitterToken,
+		AdminToken:        cfg.AdminToken,
+		SubmissionsDir:    cfg.SubmissionsDir,
+		PublishedDir:      cfg.PublishedDir,
+		GitHubRepo:        cfg.GitHubRepo,
+		ScanConfig:        scanConfig,
+		GoogleOAuthConfig: auth.NewGoogleOAuthConfig(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
+		IDTokenVerifier:   idTokenVerifier,
+		StateStore:        auth.NewStateStore(),
+		AdminEmails:       cfg.AdminEmails,
+		SubmitterEmails:   cfg.SubmitterEmails,
+		SessionTTL:        cfg.SessionTTL,
+	}
 
 	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
 		Store:        db,
