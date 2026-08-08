@@ -106,14 +106,11 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Secure is set when the request itself arrived over TLS. In a
-	// deployment fronted by a TLS-terminating reverse proxy, r.TLS is nil
-	// even though the browser used HTTPS end-to-end; operators in that
-	// situation should terminate TLS on this process directly, or accept
-	// that the cookie won't get the Secure attribute (it is still
-	// HttpOnly + SameSite=Lax either way). A configurable "trust
-	// X-Forwarded-Proto" flag is straightforward future work if that
-	// becomes a real deployment shape.
+	// Secure is set from h.PublicBaseURL's scheme when configured (correct
+	// behind a TLS-terminating reverse proxy, where r.TLS is always nil
+	// regardless of what the browser used); otherwise it falls back to
+	// whether this request itself arrived over TLS. See
+	// Handler.secureCookie and internal/config.Config.PublicBaseURL.
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sess.ID,
@@ -121,7 +118,7 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		Expires:  sess.ExpiresAt,
 		MaxAge:   int(h.SessionTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   h.secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -148,6 +145,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   h.secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	w.WriteHeader(http.StatusOK)

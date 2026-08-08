@@ -152,6 +152,12 @@ process listens for `SIGINT`/`SIGTERM` and shuts the HTTP server down
 gracefully, which also stops the daily scan scheduler's background goroutine
 cleanly.
 
+Deploying behind a reverse proxy (Caddy, Nginx, ...) that terminates TLS?
+Set `PUBLIC_BASE_URL` (e.g. `PUBLIC_BASE_URL=https://skills.nanoinfra.org`)
+so the session cookie still gets the `Secure` attribute -- see
+`.env.example` for why this can't be inferred from the request alone in
+that setup.
+
 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` must be created by you, the
 operator, in Google Cloud Console -- this can't be automated: go to **APIs &
 Services -> Credentials -> Create Credentials -> OAuth client ID -> Web
@@ -331,7 +337,11 @@ exits at startup if missing): `SUBMITTER_TOKEN`, `ADMIN_TOKEN`,
 `SESSION_TTL` (`24h`). Optional, all-or-nothing (the LLM classification
 pass is skipped if any is unset): `LLM_API_BASE`, `LLM_API_KEY`,
 `LLM_MODEL`. Optional, permissive-if-unset (see "Authentication" above):
-`SUBMITTER_EMAILS`.
+`SUBMITTER_EMAILS`. Optional, empty by default: `PUBLIC_BASE_URL` (e.g.
+`https://skills.nanoinfra.org`) -- set this behind a TLS-terminating reverse
+proxy so the session cookie's `Secure` attribute is decided from the
+public-facing scheme instead of the (always-plain-HTTP-from-the-proxy's
+perspective) inbound request; see `.env.example` for the full rationale.
 
 ## Endpoints
 
