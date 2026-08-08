@@ -1,0 +1,8 @@
+/data/skills-server.db
+/data/submissions/*.zip
+/data/published/*.zip
+!/data/submissions/.gitkeep
+!/data/published/.gitkeep
+*.db
+*.db-*
+.env
