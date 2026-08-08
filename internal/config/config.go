@@ -7,7 +7,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 )
+
+// defaultDailyScanInterval is how often the daily re-scan scheduler ticks
+// when DAILY_SCAN_INTERVAL is unset.
+const defaultDailyScanInterval = 24 * time.Hour
 
 // Config holds all runtime configuration for the skills-server process.
 type Config struct {
@@ -34,6 +39,17 @@ type Config struct {
 	// are archived locally so downloads can be served without re-hitting
 	// GitHub on every request.
 	PublishedDir string
+	// LLMAPIBase, LLMAPIKey, and LLMModel configure the scan shield's
+	// optional LLM classification pass (internal/scan). All three are
+	// optional; if any is empty, the LLM pass is skipped entirely and never
+	// blocks a scan from completing.
+	LLMAPIBase string
+	LLMAPIKey  string
+	LLMModel   string
+	// DailyScanInterval is how often the daily re-scan scheduler
+	// (internal/scheduler) re-scans every published skill's current
+	// version. Defaults to 24h.
+	DailyScanInterval time.Duration
 }
 
 // Load reads configuration from the environment, applying defaults where the
@@ -50,6 +66,19 @@ func Load() Config {
 		GitHubRepo:     envOr("GITHUB_REPO", "nanoinfraorg/skills"),
 		SubmissionsDir: envOr("SUBMISSIONS_DIR", "./data/submissions"),
 		PublishedDir:   envOr("PUBLISHED_DIR", "./data/published"),
+		LLMAPIBase:     os.Getenv("LLM_API_BASE"),
+		LLMAPIKey:      os.Getenv("LLM_API_KEY"),
+		LLMModel:       os.Getenv("LLM_MODEL"),
+	}
+
+	cfg.DailyScanInterval = defaultDailyScanInterval
+	if raw := os.Getenv("DAILY_SCAN_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skills-server: invalid DAILY_SCAN_INTERVAL %q: %v\n", raw, err)
+			os.Exit(1)
+		}
+		cfg.DailyScanInterval = d
 	}
 
 	var missing []string

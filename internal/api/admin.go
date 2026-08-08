@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
+	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
 
@@ -41,14 +43,25 @@ func (h *Handler) ListSubmissions(w http.ResponseWriter, r *http.Request) {
 }
 
 // ApproveSubmission runs the validation pipeline synchronously against the
-// submission's archive and, if it passes, publishes the skill to GitHub and
-// records it in the public catalog. If the pipeline fails, the submission
-// is auto-rejected with the pipeline's failure reason.
+// submission's archive and, if it passes, runs the security scan shield
+// (internal/scan) against the same validated files. A "blocked" verdict
+// auto-rejects the submission via the same path a pipeline-validation
+// failure already uses, with the scan's findings summarized in the
+// rejection reason. A "flagged" or "pass" verdict proceeds to publish the
+// skill to GitHub and record it (as a new version) in the public catalog;
+// either way, the scan result is stored, attached to the submission, and
+// -- once published -- also attached to the skill version it produced, so
+// it's queryable via the versions endpoints.
 //
-// The pipeline runs inline in the request rather than via a background job
-// queue: v1 is a single-operator service, archives are small, and a
-// synchronous approve keeps the state machine trivial to reason about (no
-// "approved but not yet published" limbo state to track). See the README.
+// If skill_id already has a published skill, this is a version update, not
+// a create -- the same submission -> pending -> admin approve -> publish
+// flow handles both; no separate "update" endpoint exists.
+//
+// The pipeline and scan both run inline in the request rather than via a
+// background job queue: v1 is a single-operator service, archives are
+// small, and a synchronous approve keeps the state machine trivial to
+// reason about (no "approved but not yet published" limbo state to track).
+// See the README.
 func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx := r.Context()
@@ -70,14 +83,7 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 
 	result, err := pipeline.ValidateArchive(sub.ArchivePath, sub.SkillID)
 	if err != nil {
-		reason := err.Error()
-		if decideErr := h.Store.DecideSubmission(ctx, id, store.StatusRejected, &reason, h.now()); decideErr != nil {
-			h.Logger.Error("record auto-rejection", "error", decideErr)
-			writeError(w, http.StatusInternalServerError, "pipeline failed and rejection could not be recorded")
-			return
-		}
-		h.Logger.Info("submission auto-rejected by pipeline", "id", id, "skill_id", sub.SkillID, "reason", reason)
-		writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": reason})
+		h.autoReject(w, ctx, id, sub, err.Error())
 		return
 	}
 
@@ -88,12 +94,43 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, err := h.Store.NextVersion(ctx, sub.SkillID)
+	_, err = h.Store.GetSkill(ctx, sub.SkillID)
+	isUpdate := err == nil
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		h.Logger.Error("check for existing skill", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not check for an existing published skill")
+		return
+	}
+	trigger := store.ScanTriggerPipeline
+	if isUpdate {
+		trigger = store.ScanTriggerOnUpdate
+	}
+
+	report := scan.Run(ctx, files, h.ScanConfig)
+	scanRow, err := scan.BuildScanRow(report, store.ScanTargetSubmission, sub.ID, trigger, h.now())
 	if err != nil {
-		h.Logger.Error("compute next version", "error", err)
+		h.Logger.Error("build scan row", "error", err)
+		writeError(w, http.StatusInternalServerError, "scan completed but could not be recorded")
+		return
+	}
+	if _, err := h.Store.CreateScan(ctx, scanRow); err != nil {
+		h.Logger.Error("record scan", "error", err)
+		writeError(w, http.StatusInternalServerError, "scan completed but could not be recorded")
+		return
+	}
+
+	if report.Verdict == scan.VerdictBlocked {
+		h.autoReject(w, ctx, id, sub, summarizeBlockedScan(report))
+		return
+	}
+
+	version, err := h.Store.MaxVersion(ctx, sub.SkillID)
+	if err != nil {
+		h.Logger.Error("compute max version", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not determine the next version")
 		return
 	}
+	version++
 
 	ghFiles := make([]github.File, 0, len(files))
 	for _, f := range files {
@@ -104,7 +141,7 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		// A GitHub/infra failure is not the submitter's fault: leave the
 		// submission pending so an admin can retry the approval later,
 		// rather than auto-rejecting a skill that actually passed the
-		// pipeline.
+		// pipeline and the scan shield.
 		h.Logger.Error("publish to github", "error", err, "skill_id", sub.SkillID)
 		writeError(w, http.StatusBadGateway, "publish to GitHub failed; submission remains pending for retry")
 		return
@@ -116,17 +153,24 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	skill := store.Skill{
-		SkillID:     sub.SkillID,
-		DisplayName: sub.DisplayName,
-		Description: result.Metadata.Description,
-		Version:     version,
-		Submitter:   sub.Submitter,
-		PublishedAt: h.now(),
-		GitHubPath:  sub.SkillID + "/",
+	skillVersion := store.SkillVersion{
+		SkillID:      sub.SkillID,
+		Version:      version,
+		SubmissionID: sub.ID,
+		DisplayName:  sub.DisplayName,
+		Description:  result.Metadata.Description,
+		GitHubPath:   sub.SkillID + "/",
+		PublishedAt:  h.now(),
+		Status:       store.SkillVersionPublished,
 	}
-	if err := h.Store.UpsertSkill(ctx, skill); err != nil {
-		h.Logger.Error("upsert skill", "error", err)
+	skillVersionID, err := h.Store.CreateSkillVersion(ctx, skillVersion)
+	if err != nil {
+		h.Logger.Error("create skill version", "error", err)
+		writeError(w, http.StatusInternalServerError, "published to GitHub but could not record the new version")
+		return
+	}
+	if err := h.Store.SetSkillPointer(ctx, sub.SkillID, version, h.now()); err != nil {
+		h.Logger.Error("set skill pointer", "error", err)
 		writeError(w, http.StatusInternalServerError, "published to GitHub but could not update the catalog")
 		return
 	}
@@ -136,12 +180,53 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Logger.Info("submission published", "id", id, "skill_id", sub.SkillID, "version", version)
+	// Attach the same scan result to the new skill version, so it's
+	// queryable via GET /api/v1/skills/{id}/versions/{version} without a
+	// second scan run.
+	versionScanRow, err := scan.BuildScanRow(report, store.ScanTargetSkillVersion, scanIDString(skillVersionID), trigger, h.now())
+	if err != nil {
+		h.Logger.Error("build skill-version scan row", "error", err)
+	} else if _, err := h.Store.CreateScan(ctx, versionScanRow); err != nil {
+		h.Logger.Error("attach scan to skill version", "error", err)
+	}
+
+	h.Logger.Info("submission published", "id", id, "skill_id", sub.SkillID, "version", version, "scan_verdict", report.Verdict)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"outcome":  "published",
-		"skill_id": sub.SkillID,
-		"version":  version,
+		"outcome":      "published",
+		"skill_id":     sub.SkillID,
+		"version":      version,
+		"scan_verdict": report.Verdict,
 	})
+}
+
+// autoReject records a submission as auto-rejected with reason and writes
+// the standard in-band rejection response. Both a pipeline-validation
+// failure and a "blocked" scan verdict funnel through this single path.
+func (h *Handler) autoReject(w http.ResponseWriter, ctx context.Context, id string, sub *store.Submission, reason string) {
+	if decideErr := h.Store.DecideSubmission(ctx, id, store.StatusRejected, &reason, h.now()); decideErr != nil {
+		h.Logger.Error("record auto-rejection", "error", decideErr)
+		writeError(w, http.StatusInternalServerError, "validation failed and rejection could not be recorded")
+		return
+	}
+	h.Logger.Info("submission auto-rejected", "id", id, "skill_id", sub.SkillID, "reason", reason)
+	writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": reason})
+}
+
+// summarizeBlockedScan builds a concise, human-readable rejection reason
+// from a "blocked" scan.Report, for use as the auto-rejection reason.
+func summarizeBlockedScan(report scan.Report) string {
+	var parts []string
+	parts = append(parts, "security scan blocked this submission:")
+	if !report.TextOnlyOK {
+		parts = append(parts, fmt.Sprintf("%d file(s) failed the text-only check (%s);", len(report.TextOnlyFailures), strings.Join(report.TextOnlyFailures, ", ")))
+	}
+	if n := len(report.HiddenCharFindings); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d hidden/invisible-character finding(s);", n))
+	}
+	if n := len(report.StaticPatternFindings); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d suspicious static-pattern finding(s);", n))
+	}
+	return strings.TrimSuffix(strings.Join(parts, " "), ";")
 }
 
 // RejectSubmission rejects a pending submission with an admin-supplied
