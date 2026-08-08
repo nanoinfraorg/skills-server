@@ -79,6 +79,18 @@ CREATE TABLE IF NOT EXISTS scans (
 	scanned_at              TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_type, target_id, id);
+
+-- sessions holds authenticated Google OAuth sessions (see internal/auth
+-- and internal/api's GoogleCallback/Logout). Expired rows are not
+-- proactively cleaned up in v1 -- see Session's doc comment in models.go.
+CREATE TABLE IF NOT EXISTS sessions (
+	id         TEXT PRIMARY KEY,
+	email      TEXT NOT NULL,
+	role       TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 `
 
 // Store wraps the SQLite database used by skills-server.
@@ -449,6 +461,60 @@ func (s *Store) GetLatestScan(ctx context.Context, targetType ScanTargetType, ta
 		return nil, fmt.Errorf("query latest scan: %w", err)
 	}
 	return sc, nil
+}
+
+// CreateSession inserts a new authenticated-session row.
+func (s *Store) CreateSession(ctx context.Context, sess Session) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, email, role, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		sess.ID, sess.Email, string(sess.Role), formatTime(sess.CreatedAt), formatTime(sess.ExpiresAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert session: %w", err)
+	}
+	return nil
+}
+
+// GetSession fetches a session by id, returning ErrNotFound both when no
+// such row exists and when it exists but has already passed its
+// expires_at -- a lazy "treat expired as not-found" check, sufficient for
+// v1 since there's no separate cleanup job (see Session's doc comment).
+func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, email, role, created_at, expires_at FROM sessions WHERE id = ?`, id)
+	var sess Session
+	var role, createdAt, expiresAt string
+	if err := row.Scan(&sess.ID, &sess.Email, &role, &createdAt, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("query session: %w", err)
+	}
+	sess.Role = SessionRole(role)
+	created, err := parseTime(createdAt)
+	if err != nil {
+		return nil, err
+	}
+	sess.CreatedAt = created
+	expires, err := parseTime(expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	sess.ExpiresAt = expires
+	if !time.Now().Before(sess.ExpiresAt) {
+		return nil, ErrNotFound
+	}
+	return &sess, nil
+}
+
+// DeleteSession removes a session row by id (used by logout). Deleting an
+// id that doesn't exist is not an error -- logout always succeeds.
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
 }
 
 type rowScanner interface {

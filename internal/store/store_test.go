@@ -394,3 +394,79 @@ func TestScanCreateAndGetLatest(t *testing.T) {
 		t.Errorf("expected ErrNotFound for a different target type, got %v", err)
 	}
 }
+
+func TestSessionLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	sess := Session{
+		ID:        "session-1",
+		Email:     "alice@example.com",
+		Role:      SessionRoleSubmitter,
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.Email != "alice@example.com" || got.Role != SessionRoleSubmitter {
+		t.Errorf("unexpected session: %+v", got)
+	}
+
+	if err := s.DeleteSession(ctx, "session-1"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if _, err := s.GetSession(ctx, "session-1"); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound after delete, got %v", err)
+	}
+
+	// Deleting an id that was never created (or already deleted) is not an
+	// error -- logout must always succeed.
+	if err := s.DeleteSession(ctx, "never-existed"); err != nil {
+		t.Errorf("delete of a nonexistent session id should not error, got %v", err)
+	}
+}
+
+func TestSessionLifecycle_ExpiredTreatedAsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	sess := Session{
+		ID:        "expired-session",
+		Email:     "bob@example.com",
+		Role:      SessionRoleAdmin,
+		CreatedAt: now.Add(-2 * time.Hour),
+		ExpiresAt: now.Add(-time.Hour), // already in the past
+	}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if _, err := s.GetSession(ctx, "expired-session"); err != ErrNotFound {
+		t.Errorf("expected an expired session to be treated as not found, got %v", err)
+	}
+}
+
+func TestRoleSatisfies(t *testing.T) {
+	cases := []struct {
+		have, need SessionRole
+		want       bool
+	}{
+		{SessionRoleAdmin, SessionRoleAdmin, true},
+		{SessionRoleAdmin, SessionRoleSubmitter, true},
+		{SessionRoleSubmitter, SessionRoleSubmitter, true},
+		{SessionRoleSubmitter, SessionRoleAdmin, false},
+	}
+	for _, c := range cases {
+		if got := RoleSatisfies(c.have, c.need); got != c.want {
+			t.Errorf("RoleSatisfies(%s, %s) = %v, want %v", c.have, c.need, got, c.want)
+		}
+	}
+}

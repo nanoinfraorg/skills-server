@@ -40,6 +40,14 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 	displayName := strings.TrimSpace(r.FormValue("display_name"))
 	submitter := strings.TrimSpace(r.FormValue("submitter"))
 
+	// A request authenticated via a Google OAuth session (rather than the
+	// shared X-Submitter-Token) has a real, verified identity -- it always
+	// wins over whatever the client put in the submitter form field, so
+	// that field can't be spoofed once we actually know who's submitting.
+	if email, ok := sessionEmailFromContext(r.Context()); ok {
+		submitter = email
+	}
+
 	if !pipeline.ValidSkillID(skillID) {
 		writeError(w, http.StatusBadRequest, "invalid skill_id: must be lowercase letters, digits, and hyphens, max 64 chars")
 		return

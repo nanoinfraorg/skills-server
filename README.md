@@ -135,19 +135,75 @@ existed, or that a later scanner change would now flag.
 
 ```bash
 cp .env.example .env
-# edit .env: set SUBMITTER_TOKEN, ADMIN_TOKEN, GITHUB_TOKEN
+# edit .env: set SUBMITTER_TOKEN, ADMIN_TOKEN, GITHUB_TOKEN, GOOGLE_CLIENT_ID,
+# GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URL, ADMIN_EMAILS
 export $(grep -v '^#' .env | xargs)
 go run ./cmd/skills-server
 ```
 
 The server fails to start (loudly, with a clear log message) if
-`SUBMITTER_TOKEN`, `ADMIN_TOKEN`, or `GITHUB_TOKEN` are unset or empty —
-there is no insecure default. `DB_PATH`, `SUBMISSIONS_DIR`, `PUBLISHED_DIR`,
-`PORT`, `GITHUB_REPO`, `LLM_API_BASE`/`LLM_API_KEY`/`LLM_MODEL`, and
-`DAILY_SCAN_INTERVAL` all have sane (or empty/disabled) defaults -- see
-`.env.example`. The process listens for `SIGINT`/`SIGTERM` and shuts the
-HTTP server down gracefully, which also stops the daily scan scheduler's
-background goroutine cleanly.
+`SUBMITTER_TOKEN`, `ADMIN_TOKEN`, `GITHUB_TOKEN`, `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL`, or `ADMIN_EMAILS` are unset or
+empty — there is no insecure default. `DB_PATH`, `SUBMISSIONS_DIR`,
+`PUBLISHED_DIR`, `PORT`, `GITHUB_REPO`, `LLM_API_BASE`/`LLM_API_KEY`/
+`LLM_MODEL`, `DAILY_SCAN_INTERVAL`, `SUBMITTER_EMAILS`, and `SESSION_TTL` all
+have sane (or empty/disabled/permissive) defaults -- see `.env.example`. The
+process listens for `SIGINT`/`SIGTERM` and shuts the HTTP server down
+gracefully, which also stops the daily scan scheduler's background goroutine
+cleanly.
+
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` must be created by you, the
+operator, in Google Cloud Console -- this can't be automated: go to **APIs &
+Services -> Credentials -> Create Credentials -> OAuth client ID -> Web
+application**, and register `GOOGLE_REDIRECT_URL` as an authorized redirect
+URI on that client.
+
+## Authentication
+
+There are two independent, equally valid ways to authenticate every
+protected endpoint -- the original shared-secret headers, unchanged, and
+"Sign in with Google" as a second, parallel option added later. A request
+is authenticated if *either* is present and valid; neither can be used to
+weaken the other.
+
+- **Shared tokens** (original): `X-Submitter-Token` for
+  `POST /api/v1/submissions` and the either-auth scan-preview endpoints;
+  `X-Admin-Token` for everything under `/api/v1/admin/*` and the rescan
+  endpoint.
+- **Google OAuth session cookie**: `GET /auth/google/login` redirects to
+  Google's consent screen; `GET /auth/google/callback` completes the
+  Authorization Code flow and sets an HTTP-only `skills_server_session`
+  cookie; `POST /auth/logout` clears it. The session's role (`admin` or
+  `submitter`) is computed once at login time from the `ADMIN_EMAILS` /
+  `SUBMITTER_EMAILS` allowlists and stored on the session row, not
+  re-derived per request.
+
+**Role precedence** is the same hierarchy the two shared tokens already
+have implicitly (a service holding the admin token can do everything a
+submitter token can, since they're just two separate secrets for two
+separate privilege levels): an `admin`-role session satisfies both
+admin-only and submitter-only routes; a `submitter`-role session satisfies
+only submitter-only (and either-auth) routes.
+
+When a submission is created by a request authenticated via a session
+cookie rather than `X-Submitter-Token`, the session's verified email always
+replaces whatever the client put in the `submitter` form field -- once
+there's a real, Google-verified identity behind the request, that identity
+wins, and the field can no longer be spoofed.
+
+```bash
+# Browser flow: visit this URL, complete Google's consent screen, and the
+# callback sets the session cookie automatically.
+open http://localhost:8080/auth/google/login
+
+# Everything else works exactly as with a token, just swap the header for
+# a cookie:
+curl http://localhost:8080/api/v1/admin/submissions?status=pending \
+  --cookie "skills_server_session=<value from the browser's cookie jar>"
+
+curl -X POST http://localhost:8080/auth/logout \
+  --cookie "skills_server_session=<value>"
+```
 
 ## Design choices
 
@@ -220,6 +276,40 @@ A few things the task intentionally left up to implementation judgment:
   shared by both `internal/api` and `internal/scheduler`). This keeps the
   security-critical validation and scanning logic (`internal/pipeline`,
   `internal/scan`) testable in complete isolation from HTTP and SQL.
+- **OAuth "state" storage**: an in-memory `sync.Mutex`-guarded map
+  (`internal/auth.StateStore`), not a cookie or the database. State only
+  needs to survive one browser round trip through Google's consent screen
+  (10-minute TTL, single-use -- consumed and deleted on the first callback
+  that presents it, valid or not, to block replay), and skills-server is a
+  single-process deployment, so an in-memory map is sufficient; it would
+  need to move into the shared store (or an external cache) for a
+  horizontally-scaled deployment. This is documented as an assumption on
+  `StateStore` itself.
+- **Sessions have no cleanup job**: `sessions` rows are never proactively
+  deleted when they expire -- `GetSession` just treats an expired row as
+  not-found on lookup (a lazy check, sufficient for correctness). The table
+  grows unboundedly as old sessions expire; a periodic
+  `DELETE FROM sessions WHERE expires_at < ?` is straightforward future
+  work, called out on `store.Session`'s doc comment.
+- **Session cookie's `Secure` attribute**: set when the request itself
+  arrived over TLS (`r.TLS != nil`), not via a configurable
+  "trust this reverse proxy" flag. This keeps local (plain-http) dev
+  working out of the box; a deployment behind a TLS-terminating reverse
+  proxy would see `r.TLS == nil` even though the browser used HTTPS
+  end-to-end, so the cookie would be set without `Secure` there (still
+  `HttpOnly` + `SameSite=Lax` either way). Honoring `X-Forwarded-Proto`
+  behind a trusted proxy is reasonable future work if that becomes this
+  service's real deployment shape.
+- **ID token verification is behind a small interface**
+  (`internal/auth.IDTokenVerifier`), the same "fake in tests" pattern the
+  existing `Publisher` interface uses to keep the real GitHub API out of
+  the test suite: go-oidc's real verifier (JWKS fetching/caching,
+  signature/issuer/audience/expiry checks) implements it in production;
+  tests inject a fake returning fixed claims. The OAuth code exchange
+  itself isn't behind an interface -- tests instead point
+  `oauth2.Config.Endpoint.TokenURL` at an `httptest.Server`, the same
+  technique already used for the GitHub Contents API and the scan shield's
+  LLM call.
 - **Test framework**: stdlib `testing` + `httptest` throughout, per the
   spec's guidance — no third-party assertion library. The GitHub publish
   step is tested against a fake `Publisher` interface (for the HTTP
@@ -233,16 +323,24 @@ A few things the task intentionally left up to implementation judgment:
 
 See `.env.example` for the full list with descriptions. Required (server
 exits at startup if missing): `SUBMITTER_TOKEN`, `ADMIN_TOKEN`,
-`GITHUB_TOKEN`. Optional with defaults: `GITHUB_REPO`
+`GITHUB_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`GOOGLE_REDIRECT_URL`, `ADMIN_EMAILS`. Optional with defaults: `GITHUB_REPO`
 (`nanoinfraorg/skills`), `DB_PATH` (`./data/skills-server.db`),
 `SUBMISSIONS_DIR` (`./data/submissions`), `PUBLISHED_DIR`
-(`./data/published`), `PORT` (`8080`), `DAILY_SCAN_INTERVAL` (`24h`).
-Optional, all-or-nothing (the LLM classification pass is skipped if any is
-unset): `LLM_API_BASE`, `LLM_API_KEY`, `LLM_MODEL`.
+(`./data/published`), `PORT` (`8080`), `DAILY_SCAN_INTERVAL` (`24h`),
+`SESSION_TTL` (`24h`). Optional, all-or-nothing (the LLM classification
+pass is skipped if any is unset): `LLM_API_BASE`, `LLM_API_KEY`,
+`LLM_MODEL`. Optional, permissive-if-unset (see "Authentication" above):
+`SUBMITTER_EMAILS`.
 
 ## Endpoints
 
-All routes are under `/api/v1` except the health check.
+All routes are under `/api/v1` except the health check and the `/auth/*`
+routes below. Every "Requires `X-Submitter-Token`" / "Requires
+`X-Admin-Token`" / "Requires either" note below also accepts the
+equivalent-or-higher-privileged `skills_server_session` cookie from "Sign
+in with Google" -- see "Authentication" above for the precedence rules;
+it's not repeated on every endpoint.
 
 ### `GET /healthz`
 
@@ -251,6 +349,37 @@ No auth. Plain liveness check.
 ```bash
 curl http://localhost:8080/healthz
 ```
+
+### `GET /auth/google/login`
+
+No auth (this *is* the auth flow). Redirects (`302`) to Google's OAuth
+consent screen, requesting the `openid email profile` scopes.
+
+```bash
+open http://localhost:8080/auth/google/login
+```
+
+### `GET /auth/google/callback`
+
+No auth. Google redirects here after consent, with `code` and `state`
+query parameters. On success, sets the `skills_server_session` cookie and
+returns a small human-readable confirmation page. `400` on a missing,
+expired, or already-used `state`; `403` if the Google account's email
+isn't verified, or isn't on the appropriate allowlist (`ADMIN_EMAILS` /
+`SUBMITTER_EMAILS`); `502` if the code exchange with Google fails.
+
+### `POST /auth/logout`
+
+No auth required (a request with no session cookie is a no-op, not an
+error). Deletes the session named by the `skills_server_session` cookie,
+if any, and clears the cookie.
+
+```bash
+curl -X POST http://localhost:8080/auth/logout \
+  --cookie "skills_server_session=<value>"
+```
+
+Always `200 OK`.
 
 ### `POST /api/v1/submissions`
 

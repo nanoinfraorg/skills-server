@@ -86,6 +86,50 @@ type SkillDetail struct {
 	CreatedAt    time.Time
 }
 
+// SessionRole is the privilege level of an authenticated Google OAuth
+// session (see internal/auth.DetermineRole, which computes it once at
+// login time; it is then stored on the session row rather than
+// re-derived per request).
+type SessionRole string
+
+const (
+	SessionRoleAdmin     SessionRole = "admin"
+	SessionRoleSubmitter SessionRole = "submitter"
+)
+
+// RoleSatisfies reports whether an authenticated session with role have is
+// privileged enough for a route that requires role need. Admin is treated
+// as strictly more privileged than submitter -- the same hierarchy the
+// existing two-shared-token scheme already has implicitly, by using two
+// separate tokens for two separate privilege levels: an admin session
+// satisfies a submitter-level requirement, but a submitter session does
+// not satisfy an admin-level one.
+func RoleSatisfies(have, need SessionRole) bool {
+	if have == SessionRoleAdmin {
+		return true
+	}
+	return have == need
+}
+
+// Session is one authenticated Google OAuth session, looked up by the
+// opaque, cryptographically random id stored in the session cookie
+// (internal/api's GoogleCallback sets it; SessionCookieName names it).
+//
+// Known limitation (v1): expired sessions are never proactively deleted by
+// a background job -- GetSession treats an expired row as not-found on
+// lookup, which is sufficient for correctness, but the sessions table
+// grows unboundedly over time as old sessions expire. A periodic cleanup
+// (e.g. "DELETE FROM sessions WHERE expires_at < ?") is future work, the
+// same tradeoff the daily scan scheduler's docs elsewhere in this codebase
+// call out for other unbounded-growth cases.
+type Session struct {
+	ID        string
+	Email     string
+	Role      SessionRole
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 // ScanTargetType identifies what kind of thing a scan ran against.
 type ScanTargetType string
 
