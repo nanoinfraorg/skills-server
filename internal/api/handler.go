@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -84,9 +85,28 @@ type Handler struct {
 	// SessionTTL is how long a Google-OAuth-issued session cookie remains
 	// valid.
 	SessionTTL time.Duration
+	// PublicBaseURL, when non-empty, is the externally-visible scheme+host
+	// this server is reachable at (see internal/config.Config.PublicBaseURL
+	// for the full reverse-proxy rationale). GoogleCallback uses its scheme
+	// -- not the inbound request's r.TLS -- to decide the session cookie's
+	// Secure attribute, when set.
+	PublicBaseURL string
 	// Now returns the current time; overridable in tests for deterministic
 	// timestamps.
 	Now func() time.Time
+}
+
+// secureCookie reports whether a session cookie set in response to r should
+// carry the Secure attribute: PublicBaseURL's scheme is authoritative when
+// configured (correct behind a TLS-terminating reverse proxy, where r.TLS is
+// always nil regardless of what the browser used); otherwise it falls back
+// to the request's own r.TLS, which is only correct when this process
+// terminates TLS itself or is genuinely being accessed over plain HTTP.
+func (h *Handler) secureCookie(r *http.Request) bool {
+	if h.PublicBaseURL != "" {
+		return strings.HasPrefix(h.PublicBaseURL, "https://")
+	}
+	return r.TLS != nil
 }
 
 func (h *Handler) now() time.Time {

@@ -157,6 +157,64 @@ func TestGoogleCallback_AdminEmailGetsAdminRole(t *testing.T) {
 	}
 }
 
+func TestGoogleCallback_SessionCookieNotSecureWithoutPublicBaseURLOrTLS(t *testing.T) {
+	h := testGoogleAuthHandler(t, &auth.IDTokenClaims{Email: "admin@example.com", EmailVerified: true}, []string{"admin@example.com"}, nil)
+	// h.PublicBaseURL is left at its zero value (""), and httptest.NewRequest
+	// never sets r.TLS, so this exercises the plain-HTTP-local-dev fallback.
+	mux := NewMux(h)
+
+	state, err := h.StateStore.New()
+	if err != nil {
+		t.Fatalf("generate state: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
+
+	cookie := sessionCookieFromResponse(t, rec)
+	if cookie.Secure {
+		t.Errorf("cookie.Secure = true, want false (no PublicBaseURL, request not over TLS)")
+	}
+}
+
+func TestGoogleCallback_SessionCookieSecureWithHTTPSPublicBaseURL(t *testing.T) {
+	h := testGoogleAuthHandler(t, &auth.IDTokenClaims{Email: "admin@example.com", EmailVerified: true}, []string{"admin@example.com"}, nil)
+	// A deployment fronted by a TLS-terminating reverse proxy: this process
+	// only ever sees plain HTTP (r.TLS stays nil), but PublicBaseURL says the
+	// real, external scheme is https, which must win.
+	h.PublicBaseURL = "https://skills.nanoinfra.org"
+	mux := NewMux(h)
+
+	state, err := h.StateStore.New()
+	if err != nil {
+		t.Fatalf("generate state: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
+
+	cookie := sessionCookieFromResponse(t, rec)
+	if !cookie.Secure {
+		t.Errorf("cookie.Secure = false, want true (PublicBaseURL is https, even though r.TLS is nil)")
+	}
+}
+
+func TestLogout_ClearCookieSecureMatchesPublicBaseURL(t *testing.T) {
+	h := testGoogleAuthHandler(t, &auth.IDTokenClaims{Email: "admin@example.com", EmailVerified: true}, []string{"admin@example.com"}, nil)
+	h.PublicBaseURL = "https://skills.nanoinfra.org"
+	mux := NewMux(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	cookie := sessionCookieFromResponse(t, rec)
+	if !cookie.Secure {
+		t.Errorf("clearing cookie.Secure = false, want true (matches PublicBaseURL's https scheme)")
+	}
+	if cookie.MaxAge >= 0 {
+		t.Errorf("clearing cookie.MaxAge = %d, want negative (deletion)", cookie.MaxAge)
+	}
+}
+
 func TestGoogleCallback_SubmitterEmailInAllowlistGetsSubmitterRole(t *testing.T) {
 	h := testGoogleAuthHandler(t, &auth.IDTokenClaims{Email: "submitter@example.com", EmailVerified: true}, []string{"admin@example.com"}, []string{"submitter@example.com"})
 	mux := NewMux(h)

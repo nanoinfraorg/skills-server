@@ -89,6 +89,7 @@ func main() {
 		AdminEmails:       cfg.AdminEmails,
 		SubmitterEmails:   cfg.SubmitterEmails,
 		SessionTTL:        cfg.SessionTTL,
+		PublicBaseURL:     cfg.PublicBaseURL,
 	}
 
 	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
@@ -111,7 +112,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("skills-server starting", "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval)
+	logger.Info("skills-server starting", "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval, "public_base_url", cfg.PublicBaseURL)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", "error", err)

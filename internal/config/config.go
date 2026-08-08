@@ -83,6 +83,19 @@ type Config struct {
 	// SessionTTL is how long a Google OAuth session cookie remains valid.
 	// Defaults to 24h.
 	SessionTTL time.Duration
+	// PublicBaseURL is the externally-visible scheme+host this server is
+	// reachable at (e.g. "https://skills.nanoinfra.org"), as seen by a real
+	// client -- not necessarily what this process itself observes on the
+	// wire. It exists because a deployment fronted by a TLS-terminating
+	// reverse proxy (Caddy, Nginx, ...) hands this process plain HTTP even
+	// though the browser used HTTPS end-to-end, so relying on the request's
+	// own r.TLS to decide the session cookie's Secure attribute silently
+	// produces a non-Secure cookie in that (extremely common) deployment
+	// shape. When set, its scheme is authoritative for that decision instead
+	// of r.TLS. Optional: if empty, falls back to the original r.TLS check
+	// (correct only for a server directly terminating its own TLS, or for
+	// plain-HTTP local development).
+	PublicBaseURL string
 }
 
 // Load reads configuration from the environment, applying defaults where the
@@ -107,6 +120,7 @@ func Load() Config {
 		GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
 		AdminEmails:        parseEmailList(os.Getenv("ADMIN_EMAILS")),
 		SubmitterEmails:    parseEmailList(os.Getenv("SUBMITTER_EMAILS")),
+		PublicBaseURL:      strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"), "/"),
 	}
 
 	cfg.DailyScanInterval = defaultDailyScanInterval
@@ -127,6 +141,15 @@ func Load() Config {
 			os.Exit(1)
 		}
 		cfg.SessionTTL = d
+	}
+
+	if cfg.PublicBaseURL != "" &&
+		!strings.HasPrefix(cfg.PublicBaseURL, "http://") &&
+		!strings.HasPrefix(cfg.PublicBaseURL, "https://") {
+		fmt.Fprintf(os.Stderr,
+			"skills-server: invalid PUBLIC_BASE_URL %q: must start with http:// or https://\n",
+			cfg.PublicBaseURL)
+		os.Exit(1)
 	}
 
 	var missing []string
