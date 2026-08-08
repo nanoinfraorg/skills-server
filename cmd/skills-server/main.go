@@ -1,19 +1,31 @@
 // Command skills-server runs the self-hosted Agent Skills marketplace HTTP
 // service: submission intake, admin moderation, an automatic
-// validate-then-publish pipeline backed by a private GitHub repository, and
-// a public read-only catalog.
+// validate-then-publish pipeline backed by a private GitHub repository, a
+// security scan shield with an optional LLM classification pass, a daily
+// re-scan scheduler, and a public read-only catalog with full version
+// history.
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/api"
 	"github.com/nanoinfraorg/skills-server/internal/config"
 	"github.com/nanoinfraorg/skills-server/internal/github"
+	"github.com/nanoinfraorg/skills-server/internal/scan"
+	"github.com/nanoinfraorg/skills-server/internal/scheduler"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
+
+// shutdownTimeout bounds how long the HTTP server waits for in-flight
+// requests to finish on SIGINT/SIGTERM before giving up.
+const shutdownTimeout = 10 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -38,6 +50,12 @@ func main() {
 
 	ghClient := github.New(cfg.GitHubToken, cfg.GitHubRepo)
 
+	scanConfig := scan.Config{
+		LLMAPIBase: cfg.LLMAPIBase,
+		LLMAPIKey:  cfg.LLMAPIKey,
+		LLMModel:   cfg.LLMModel,
+	}
+
 	handler := &api.Handler{
 		Store:          db,
 		Publisher:      ghClient,
@@ -47,13 +65,38 @@ func main() {
 		SubmissionsDir: cfg.SubmissionsDir,
 		PublishedDir:   cfg.PublishedDir,
 		GitHubRepo:     cfg.GitHubRepo,
+		ScanConfig:     scanConfig,
 	}
 
-	mux := api.NewMux(handler)
-	addr := ":" + cfg.Port
-	logger.Info("skills-server starting", "addr", addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath)
+	// ctx is canceled on SIGINT/SIGTERM, giving the daily scan scheduler (a
+	// background goroutine with no other way to know the process is
+	// stopping) a clean way to stop its ticker loop.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	if err := http.ListenAndServe(addr, api.WithLogging(logger, mux)); err != nil {
+	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
+		Store:        db,
+		Logger:       logger,
+		PublishedDir: cfg.PublishedDir,
+		ScanConfig:   scanConfig,
+	})
+
+	mux := api.NewMux(handler)
+	server := &http.Server{Addr: ":" + cfg.Port, Handler: api.WithLogging(logger, mux)}
+
+	go func() {
+		<-ctx.Done()
+		logger.Info("shutdown signal received, stopping http server")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("http server shutdown", "error", err)
+		}
+	}()
+
+	logger.Info("skills-server starting", "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}
