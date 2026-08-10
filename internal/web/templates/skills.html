@@ -1,4 +1,13 @@
 {{define "content"}}
+<style>
+  /* Equal-height cards: the grid already stretches each <article> to the
+     row's tallest sibling (CSS Grid's default align-items: stretch), but
+     without this the footer just sits wherever the description text ends,
+     leaving a visually awkward gap under short descriptions. Flex-column
+     pins the footer to the bottom of every card consistently. */
+  .skill-cards > article { display: flex; flex-direction: column; }
+  .skill-cards > article > p { flex: 1; }
+</style>
 <h1>Browse skills</h1>
 
 <form method="get" action="/skills" role="search">
@@ -15,7 +24,7 @@
 {{end}}
 
 {{if .Skills}}
-  <div class="grid">
+  <div class="grid skill-cards">
   {{range .Skills}}
     <article>
       <header><a href="/skills/{{.SkillID}}"><strong>{{.DisplayName}}</strong></a></header>
