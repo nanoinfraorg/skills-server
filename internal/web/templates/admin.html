@@ -30,7 +30,7 @@
           </form>
           <form method="post" action="/admin/submissions/{{.ID}}/reject" style="display:inline">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <input type="text" name="reason" placeholder="Rejection reason" required>
+            <input type="text" name="reason" placeholder="Reason" required style="width: 10rem; display: inline-block;">
             <button type="submit" class="secondary">Reject</button>
           </form>
         </td>
