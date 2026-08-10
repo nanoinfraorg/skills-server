@@ -1,4 +1,5 @@
 {{define "content"}}
+<p class="eyebrow">Skill</p>
 <h1>{{.Skill.DisplayName}}</h1>
 <p><code>{{.Skill.SkillID}}</code> &middot; current version v{{.Skill.Version}}</p>
 
@@ -29,13 +30,13 @@
     <li>
       {{.Name}}
       {{if eq .Status "pass"}}
-        <mark style="background: #1a7f37; color: #fff;" title="{{.Detail}}">PASS</mark>
+        <mark class="badge" style="background: #1a7f37; color: #fff;" title="{{.Detail}}">PASS</mark>
       {{else if eq .Status "warn"}}
-        <mark style="background: #b45309; color: #fff;" title="{{.Detail}}">WARN</mark>
+        <mark class="badge" style="background: #b45309; color: #fff;" title="{{.Detail}}">WARN</mark>
       {{else if eq .Status "fail"}}
-        <mark style="background: #b91c1c; color: #fff;" title="{{.Detail}}">FAIL</mark>
+        <mark class="badge" style="background: #b91c1c; color: #fff;" title="{{.Detail}}">FAIL</mark>
       {{else}}
-        <mark style="background: var(--pico-muted-color); color: #fff;" title="{{.Detail}}">PENDING</mark>
+        <mark class="badge" style="background: var(--pico-muted-color); color: #fff;" title="{{.Detail}}">PENDING</mark>
       {{end}}
     </li>
   {{end}}
