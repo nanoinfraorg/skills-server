@@ -628,3 +628,8 @@ To cut a versioned release, tag and push:
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+This alone builds and pushes the tagged image and, once that succeeds, a
+third job (`release`) creates a GitHub Release for the tag with
+auto-generated notes (from commits/PRs since the last tag) plus the exact
+image reference to pull.
