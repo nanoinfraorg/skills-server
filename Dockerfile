@@ -31,9 +31,10 @@ RUN mkdir -p /data/submissions /data/published
 # --- runtime -----------------------------------------------------------------
 # distroless/static: no shell, no package manager, ca-certificates already
 # included (needed for the outbound HTTPS calls this server makes -- GitHub's
-# API, Google's OAuth/OIDC endpoints, and an optional LLM endpoint) -- a
-# deliberately minimal attack surface for a service whose whole purpose is
-# acting as a security shield against untrusted, submitted content.
+# API, Google's OAuth/OIDC endpoints, an optional LLM endpoint, and an
+# optional VirusTotal endpoint) -- a deliberately minimal attack surface for
+# a service whose whole purpose is acting as a security shield against
+# untrusted, submitted content.
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 

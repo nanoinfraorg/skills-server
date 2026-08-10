@@ -62,17 +62,28 @@ this is logged as a warning, since every published skill should have one.
 
 The detail page also shows a "Security Audits" list: one named check per
 row, each with a PASS/WARN/FAIL/PENDING badge (`internal/web`'s
-`securityAudit`). Today there's exactly one entry, **NanoInfra Scanner**,
-mapped directly from the current version's own scan shield verdict
-(`internal/scan.Verdict` via `store.GetLatestScan` -- the same row the
-JSON API's `GET /api/v1/skills/{id}/versions/{version}` already reads,
-looked up by the version's row id via the newly-exported
-`api.ScanIDString`): `pass` → PASS, `flagged` → WARN (an LLM-only,
-informational finding -- see `scan.ComputeVerdict`'s doc comment on why
-that's never escalated), `blocked` → FAIL. No scan recorded yet → PENDING.
-The type is a slice specifically so a future third-party check (e.g. a
-VirusTotal file scan) can be added as a second entry without changing
-this shape.
+`securityAudit`). The type is a slice specifically so more than one check
+can be shown without changing this shape.
+
+The first entry, **NanoInfra Scanner**, is always present, mapped directly
+from the current version's own scan shield verdict (`internal/scan.Verdict`
+via `store.GetLatestScan` -- the same row the JSON API's
+`GET /api/v1/skills/{id}/versions/{version}` already reads, looked up by
+the version's row id via the newly-exported `api.ScanIDString`): `pass` →
+PASS, `flagged` → WARN (an LLM-only, informational finding -- see
+`scan.ComputeVerdict`'s doc comment on why that's never escalated),
+`blocked` → FAIL. No scan recorded yet → PENDING.
+
+A second entry, **VirusTotal**, appears only when a `virustotal_scans` row
+exists for the current version -- i.e. `VIRUSTOTAL_API_KEY` is configured
+and the fire-and-forget upload for this version actually started (see
+[architecture.md](architecture.md#virustotal-integration) for the full
+async upload-then-poll design and its verdict mapping). No row at all
+(unconfigured, or the upload itself failed) → no VirusTotal row is
+rendered, not even a placeholder -- exactly the same "silently skip" shape
+the LLM classification pass already has. `internal/web/pages.go`'s
+`virusTotalAudit` does this mapping and deliberately never surfaces a
+row's raw `error_detail` text on this public, unauthenticated page.
 
 ## Two ways to submit: zip upload or pasted SKILL.md
 

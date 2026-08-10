@@ -20,6 +20,13 @@ const defaultDailyScanInterval = 24 * time.Hour
 // SESSION_TTL is unset.
 const defaultSessionTTL = 24 * time.Hour
 
+// defaultVirusTotalPollInterval is how often the VirusTotal background
+// poller (internal/virustotal) checks on pending analyses when
+// VIRUSTOTAL_POLL_INTERVAL is unset. VirusTotal's free-tier API is
+// rate-limited to roughly 4 requests/minute and ~500/day, so this is
+// deliberately much less aggressive than DAILY_SCAN_INTERVAL's own default.
+const defaultVirusTotalPollInterval = 3 * time.Minute
+
 // Config holds all runtime configuration for the skills-server process.
 type Config struct {
 	// Port is the TCP port the HTTP server listens on.
@@ -56,6 +63,19 @@ type Config struct {
 	// (internal/scheduler) re-scans every published skill's current
 	// version. Defaults to 24h.
 	DailyScanInterval time.Duration
+	// VirusTotalAPIKey optionally enables the VirusTotal integration
+	// (internal/virustotal): a fire-and-forget upload of every newly
+	// published skill version's archive for VirusTotal's multi-engine AV
+	// analysis, checked by a background poller and shown as a second
+	// "Security Audits" entry once complete. Optional, matching
+	// LLMAPIBase/LLMAPIKey/LLMModel's pattern exactly: if unset, the whole
+	// feature is skipped -- no upload, no poller, no panel entry, not even
+	// a placeholder.
+	VirusTotalAPIKey string
+	// VirusTotalPollInterval is how often the background poller checks on
+	// pending VirusTotal analyses. Meaningless if VirusTotalAPIKey is
+	// unset. Defaults to 3m.
+	VirusTotalPollInterval time.Duration
 	// GoogleClientID, GoogleClientSecret, and GoogleRedirectURL configure
 	// "Sign in with Google" (internal/auth, internal/api's
 	// /auth/google/login and /auth/google/callback), the second, parallel
@@ -115,6 +135,7 @@ func Load() Config {
 		LLMAPIBase:         os.Getenv("LLM_API_BASE"),
 		LLMAPIKey:          os.Getenv("LLM_API_KEY"),
 		LLMModel:           os.Getenv("LLM_MODEL"),
+		VirusTotalAPIKey:   os.Getenv("VIRUSTOTAL_API_KEY"),
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
@@ -141,6 +162,16 @@ func Load() Config {
 			os.Exit(1)
 		}
 		cfg.SessionTTL = d
+	}
+
+	cfg.VirusTotalPollInterval = defaultVirusTotalPollInterval
+	if raw := os.Getenv("VIRUSTOTAL_POLL_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skills-server: invalid VIRUSTOTAL_POLL_INTERVAL %q: %v\n", raw, err)
+			os.Exit(1)
+		}
+		cfg.VirusTotalPollInterval = d
 	}
 
 	if cfg.PublicBaseURL != "" &&

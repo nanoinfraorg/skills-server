@@ -474,6 +474,117 @@ func TestScanCreateAndGetLatest(t *testing.T) {
 	}
 }
 
+func TestVirusTotalScanLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if _, err := s.GetLatestVirusTotalScan(ctx, 1); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound before any virustotal scan exists, got %v", err)
+	}
+	if pending, err := s.ListPendingVirusTotalScans(ctx); err != nil || len(pending) != 0 {
+		t.Fatalf("expected no pending scans, got %v (err=%v)", pending, err)
+	}
+
+	id, err := s.CreateVirusTotalScan(ctx, 1, "analysis-1", now)
+	if err != nil {
+		t.Fatalf("create virustotal scan: %v", err)
+	}
+
+	got, err := s.GetLatestVirusTotalScan(ctx, 1)
+	if err != nil {
+		t.Fatalf("get latest virustotal scan: %v", err)
+	}
+	if got.ID != id || got.AnalysisID != "analysis-1" || got.Status != VirusTotalScanPending {
+		t.Errorf("unexpected pending row: %+v", got)
+	}
+	if got.MaliciousCount != nil || got.Permalink != nil {
+		t.Errorf("expected nil counts/permalink on a pending row, got %+v", got)
+	}
+
+	pending, err := s.ListPendingVirusTotalScans(ctx)
+	if err != nil || len(pending) != 1 || pending[0].ID != id {
+		t.Fatalf("expected exactly the new row to be pending, got %+v (err=%v)", pending, err)
+	}
+
+	// A scan against a different skill version must not be conflated.
+	if _, err := s.GetLatestVirusTotalScan(ctx, 2); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound for a different skill version, got %v", err)
+	}
+
+	checkedAt := now.Add(time.Minute)
+	if err := s.UpdateVirusTotalScanResult(ctx, id, 3, 1, 60, 10, "https://www.virustotal.com/gui/file-analysis/analysis-1", checkedAt); err != nil {
+		t.Fatalf("update virustotal scan result: %v", err)
+	}
+
+	got, err = s.GetLatestVirusTotalScan(ctx, 1)
+	if err != nil {
+		t.Fatalf("get latest virustotal scan after completion: %v", err)
+	}
+	if got.Status != VirusTotalScanCompleted {
+		t.Errorf("status = %s, want completed", got.Status)
+	}
+	if got.MaliciousCount == nil || *got.MaliciousCount != 3 {
+		t.Errorf("malicious count = %v, want 3", got.MaliciousCount)
+	}
+	if got.SuspiciousCount == nil || *got.SuspiciousCount != 1 {
+		t.Errorf("suspicious count = %v, want 1", got.SuspiciousCount)
+	}
+	if got.HarmlessCount == nil || *got.HarmlessCount != 60 {
+		t.Errorf("harmless count = %v, want 60", got.HarmlessCount)
+	}
+	if got.UndetectedCount == nil || *got.UndetectedCount != 10 {
+		t.Errorf("undetected count = %v, want 10", got.UndetectedCount)
+	}
+	if got.Permalink == nil || *got.Permalink != "https://www.virustotal.com/gui/file-analysis/analysis-1" {
+		t.Errorf("permalink = %v, want the analysis permalink", got.Permalink)
+	}
+
+	// A completed row must no longer show up as pending.
+	if pending, err := s.ListPendingVirusTotalScans(ctx); err != nil || len(pending) != 0 {
+		t.Fatalf("expected no pending scans after completion, got %v (err=%v)", pending, err)
+	}
+}
+
+func TestVirusTotalScanMarkError(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	id, err := s.CreateVirusTotalScan(ctx, 42, "analysis-2", now)
+	if err != nil {
+		t.Fatalf("create virustotal scan: %v", err)
+	}
+
+	if err := s.MarkVirusTotalScanError(ctx, id, "malformed stats", now.Add(time.Minute)); err != nil {
+		t.Fatalf("mark virustotal scan error: %v", err)
+	}
+
+	got, err := s.GetLatestVirusTotalScan(ctx, 42)
+	if err != nil {
+		t.Fatalf("get latest virustotal scan: %v", err)
+	}
+	if got.Status != VirusTotalScanError {
+		t.Errorf("status = %s, want error", got.Status)
+	}
+	if got.ErrorDetail == nil || *got.ErrorDetail != "malformed stats" {
+		t.Errorf("error detail = %v, want %q", got.ErrorDetail, "malformed stats")
+	}
+
+	// An errored row must no longer be picked up by the poller.
+	if pending, err := s.ListPendingVirusTotalScans(ctx); err != nil || len(pending) != 0 {
+		t.Fatalf("expected no pending scans after marking error, got %v (err=%v)", pending, err)
+	}
+}
+
+func TestVirusTotalScanUpdateResultNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.UpdateVirusTotalScanResult(ctx, 999, 0, 0, 0, 0, "", time.Now()); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestSessionLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

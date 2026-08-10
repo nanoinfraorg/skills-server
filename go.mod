@@ -3,6 +3,7 @@ module github.com/nanoinfraorg/skills-server
 go 1.26.5
 
 require (
+	github.com/VirusTotal/vt-go v1.1.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/oauth2 v0.36.0
@@ -16,6 +17,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/thedevsaddam/gojsonq/v2 v2.5.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

@@ -98,3 +98,93 @@ A daily scheduler (`DAILY_SCAN_INTERVAL`, default `24h`) re-scans every
 non-quarantined skill's current version and quarantines any that newly
 come back `blocked` -- catching skills published before the shield
 existed, or before a scanner change.
+
+## VirusTotal integration
+
+An optional second, third-party opinion alongside the scan shield above:
+[VirusTotal](https://www.virustotal.com)'s multi-engine antivirus sweep
+(~70 independent AV engines) against the same published archive.
+Implemented in `internal/virustotal`, wrapping the official
+[`github.com/VirusTotal/vt-go`](https://github.com/VirusTotal/vt-go)
+client.
+
+**Optional, unconfigured by default.** If `VIRUSTOTAL_API_KEY` is unset,
+this entire feature is skipped: no upload is attempted, the background
+poller never starts, and no "VirusTotal" entry ever appears in the skill
+detail page's Security Audits panel -- not even a "not configured"
+placeholder. This mirrors the scan shield's own optional LLM
+classification pass exactly.
+
+**Why async, unlike the scan shield.** The scan shield's checks
+(text-only, hidden characters, static patterns, optional LLM) all run
+synchronously inline in the approve request -- they're fast and bounded.
+VirusTotal's actual multi-engine analysis is neither: it can take
+anywhere from a few seconds to a couple of minutes, since the upload is
+queued behind dozens of independent AV engines outside this server's
+control. Running that inline would make every approve request that slow
+(or far slower during a VirusTotal outage), so this is instead a
+fire-and-forget upload plus a background poller -- the same
+"synchronous core + async re-check" shape the daily scan scheduler above
+already established for a different problem (catching skills that later
+turn out bad), applied here to a different one (waiting on a slow third
+party):
+
+1. **Upload, on publish.** Right after `ApproveSubmissionCore`
+   (`internal/api/admin.go`) successfully publishes a new skill version,
+   it launches a goroutine (`context.Background()`, not the request's
+   own context, which is canceled the instant the response is sent) that
+   re-zips the already-validated, already-in-memory file contents (no
+   second disk read, no re-fetch from GitHub) and uploads that archive to
+   VirusTotal. A successful upload inserts a `virustotal_scans` row with
+   status `pending` and VirusTotal's analysis ID. An upload error
+   (network, rate limit, invalid key) is logged and creates no row at
+   all -- the panel shows nothing for VirusTotal on that skill, identical
+   to VirusTotal not being configured. Either way, the approve request
+   itself has already returned; nothing here can slow it down or fail it.
+2. **Poll, in the background.** A separate goroutine
+   (`internal/virustotal.Run`, started from `main.go` only when
+   `VIRUSTOTAL_API_KEY` is set) ticks every `VIRUSTOTAL_POLL_INTERVAL`
+   (default `3m` -- VirusTotal's free tier is rate-limited to roughly 4
+   requests/minute and ~500/day, so this is deliberately much less
+   aggressive than `DAILY_SCAN_INTERVAL`) and checks every `pending` row.
+   Still queued → left alone. A transient check failure (network error,
+   429 rate limit, ...) is logged and the row stays `pending` for the
+   next tick -- never retried in a hot loop, and one bad row never stops
+   the rest of that pass. Completed → the per-engine stats
+   (`malicious`/`suspicious`/`harmless`/`undetected` counts) and a GUI
+   permalink are recorded and the row flips to `completed`. If VirusTotal
+   returns a definitive "completed" response whose stats aren't in the
+   expected shape, the row flips to `error` instead (so the poller stops
+   spending API calls on something that will never resolve) -- a
+   different failure mode from a transient one, which stays `pending`.
+
+**Verdict mapping.** `internal/virustotal.ComputeVerdict(malicious,
+suspicious int64) string` maps the completed stats to the Security Audits
+panel's `pass`/`warn`/`fail` vocabulary:
+
+- `fail` if any engine reports the file outright malicious -- the
+  strongest signal VirusTotal offers.
+- `warn` (not `fail`) if none reported malicious but at least one
+  reported merely "suspicious" -- a softer, heuristics-only signal that's
+  prone to false positives across ~70 independent engines, so it's a
+  human-review flag rather than a hard finding.
+- `pass` otherwise.
+
+**Deliberate scoping decision: no auto-quarantine.** Unlike the scan
+shield's daily re-scan, which quarantines a skill the moment it comes
+back `blocked`, nothing in `internal/virustotal` ever calls
+`store.SetSkillVersionStatus`. Multiple independent AV engines produce
+false positives regularly enough (a heuristic "suspicious" verdict on a
+handful of engines, out of ~70, is common for entirely legitimate
+scripts) that auto-quarantining on a VirusTotal finding alone would be a
+much bigger policy decision than "add a badge to a panel". This phase
+only records and displays the result; deciding whether/how a VirusTotal
+finding should ever affect a skill's availability is left for later, and
+is called out explicitly in `internal/virustotal/poller.go`'s doc
+comments.
+
+Data lives in its own `virustotal_scans` table (not a column on `scans`):
+VirusTotal's shape -- an analysis id, per-engine stats, a permalink --
+doesn't fit `scans`' shape, and conflating "our own deterministic+LLM
+shield" with "a third-party multi-engine AV sweep" in one table would
+make both harder to reason about.

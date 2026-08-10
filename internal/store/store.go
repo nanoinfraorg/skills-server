@@ -92,6 +92,35 @@ CREATE TABLE IF NOT EXISTS sessions (
 	csrf_token TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+-- virustotal_scans records the async VirusTotal multi-engine AV sweep
+-- (internal/virustotal) for a published skill version: a "pending" row is
+-- inserted by a fire-and-forget upload right after a successful publish
+-- (internal/api/admin.go's ApproveSubmissionCore), and later filled in by
+-- the background poller once VirusTotal's analysis completes. This is a
+-- brand-new table (not a column on scans) because VirusTotal's shape --
+-- an analysis id, per-engine stats, a permalink -- doesn't fit scans' shape,
+-- and the two are conceptually different checks (our own deterministic+LLM
+-- shield vs. a third-party multi-engine AV sweep). One row per upload
+-- attempt; skill_version_id is not unique since a re-published version
+-- would be a different skill_versions row entirely, but is left NOT NULL
+-- (never a submission id) since only a published version is ever uploaded.
+CREATE TABLE IF NOT EXISTS virustotal_scans (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	skill_version_id  INTEGER NOT NULL,
+	analysis_id       TEXT NOT NULL,
+	status            TEXT NOT NULL, -- "pending" | "completed" | "error"
+	malicious_count   INTEGER,
+	suspicious_count  INTEGER,
+	harmless_count    INTEGER,
+	undetected_count  INTEGER,
+	permalink         TEXT,
+	error_detail      TEXT,
+	created_at        TEXT NOT NULL,
+	checked_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_virustotal_scans_skill_version ON virustotal_scans(skill_version_id, id);
+CREATE INDEX IF NOT EXISTS idx_virustotal_scans_status ON virustotal_scans(status);
 `
 
 // sessionsCSRFMigration adds the csrf_token column (see Session.CSRFToken)
@@ -522,6 +551,117 @@ func (s *Store) GetLatestScan(ctx context.Context, targetType ScanTargetType, ta
 	return sc, nil
 }
 
+// CreateVirusTotalScan inserts a new "pending" VirusTotal scan row for
+// skillVersionID and returns its generated id. Called by the fire-and-forget
+// upload goroutine right after a successful upload (see
+// internal/virustotal.UploadAndRecord) -- never called at all if the upload
+// itself failed, so there is no "upload failed" row shape to represent.
+func (s *Store) CreateVirusTotalScan(ctx context.Context, skillVersionID int64, analysisID string, createdAt time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO virustotal_scans (skill_version_id, analysis_id, status, created_at, checked_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		skillVersionID, analysisID, string(VirusTotalScanPending), formatTime(createdAt), formatTime(createdAt),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert virustotal scan: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("get virustotal scan id: %w", err)
+	}
+	return id, nil
+}
+
+// GetLatestVirusTotalScan returns the most recently recorded VirusTotal scan
+// for skillVersionID, or ErrNotFound if none was ever uploaded -- either
+// VirusTotal isn't configured, or the fire-and-forget upload itself failed
+// (which never creates a row at all; see UploadAndRecord).
+func (s *Store) GetLatestVirusTotalScan(ctx context.Context, skillVersionID int64) (*VirusTotalScan, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, skill_version_id, analysis_id, status, malicious_count, suspicious_count, harmless_count, undetected_count, permalink, error_detail, created_at, checked_at
+		FROM virustotal_scans WHERE skill_version_id = ? ORDER BY id DESC LIMIT 1`,
+		skillVersionID,
+	)
+	vt, err := scanVirusTotalScan(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query latest virustotal scan: %w", err)
+	}
+	return vt, nil
+}
+
+// ListPendingVirusTotalScans returns every VirusTotal scan row still
+// awaiting a result, oldest first, for the background poller to check on.
+func (s *Store) ListPendingVirusTotalScans(ctx context.Context) ([]VirusTotalScan, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, skill_version_id, analysis_id, status, malicious_count, suspicious_count, harmless_count, undetected_count, permalink, error_detail, created_at, checked_at
+		FROM virustotal_scans WHERE status = ? ORDER BY id ASC`,
+		string(VirusTotalScanPending),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending virustotal scans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []VirusTotalScan
+	for rows.Next() {
+		vt, err := scanVirusTotalScan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan virustotal scan: %w", err)
+		}
+		out = append(out, *vt)
+	}
+	return out, rows.Err()
+}
+
+// UpdateVirusTotalScanResult records a completed VirusTotal analysis's
+// per-engine stats and permalink against an existing row, flipping its
+// status to "completed".
+func (s *Store) UpdateVirusTotalScanResult(ctx context.Context, id, malicious, suspicious, harmless, undetected int64, permalink string, checkedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE virustotal_scans
+		SET status = ?, malicious_count = ?, suspicious_count = ?, harmless_count = ?, undetected_count = ?, permalink = ?, checked_at = ?
+		WHERE id = ?`,
+		string(VirusTotalScanCompleted), malicious, suspicious, harmless, undetected, permalink, formatTime(checkedAt), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update virustotal scan result: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkVirusTotalScanError flips a row's status to "error" with detail,
+// recording that VirusTotal returned a definitive but unexpectedly-shaped
+// response for this analysis (see internal/virustotal.ErrMalformedAnalysis)
+// -- a permanent failure the poller should stop retrying, unlike a
+// transient network/rate-limit error, which just leaves the row "pending".
+func (s *Store) MarkVirusTotalScanError(ctx context.Context, id int64, detail string, checkedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE virustotal_scans SET status = ?, error_detail = ?, checked_at = ? WHERE id = ?`,
+		string(VirusTotalScanError), detail, formatTime(checkedAt), id,
+	)
+	if err != nil {
+		return fmt.Errorf("mark virustotal scan error: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateSession inserts a new authenticated-session row.
 func (s *Store) CreateSession(ctx context.Context, sess Session) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -687,6 +827,50 @@ func scanScanRow(row rowScanner) (*Scan, error) {
 	}
 	sc.ScannedAt = scanned
 	return &sc, nil
+}
+
+func scanVirusTotalScan(row rowScanner) (*VirusTotalScan, error) {
+	var vt VirusTotalScan
+	var status, createdAt, checkedAt string
+	var malicious, suspicious, harmless, undetected sql.NullInt64
+	var permalink, errorDetail sql.NullString
+	if err := row.Scan(
+		&vt.ID, &vt.SkillVersionID, &vt.AnalysisID, &status,
+		&malicious, &suspicious, &harmless, &undetected,
+		&permalink, &errorDetail, &createdAt, &checkedAt,
+	); err != nil {
+		return nil, err
+	}
+	vt.Status = VirusTotalScanStatus(status)
+	if malicious.Valid {
+		vt.MaliciousCount = &malicious.Int64
+	}
+	if suspicious.Valid {
+		vt.SuspiciousCount = &suspicious.Int64
+	}
+	if harmless.Valid {
+		vt.HarmlessCount = &harmless.Int64
+	}
+	if undetected.Valid {
+		vt.UndetectedCount = &undetected.Int64
+	}
+	if permalink.Valid {
+		vt.Permalink = &permalink.String
+	}
+	if errorDetail.Valid {
+		vt.ErrorDetail = &errorDetail.String
+	}
+	created, err := parseTime(createdAt)
+	if err != nil {
+		return nil, err
+	}
+	vt.CreatedAt = created
+	checked, err := parseTime(checkedAt)
+	if err != nil {
+		return nil, err
+	}
+	vt.CheckedAt = checked
+	return &vt, nil
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

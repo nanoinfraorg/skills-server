@@ -337,6 +337,103 @@ func TestSkillDetail_ShowsNanoinfraScannerAudit(t *testing.T) {
 	}
 }
 
+func TestSkillDetail_ShowsBothAuditsWhenVirusTotalRowExists(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	svID, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "double-audited", Version: 1, SubmissionID: "seed-double-audited", DisplayName: "Double Audited",
+		Description: "has both audits", GitHubPath: "double-audited/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	})
+	if err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "double-audited", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateScan(ctx, store.Scan{
+		TargetType: store.ScanTargetSkillVersion,
+		TargetID:   api.ScanIDString(svID),
+		Trigger:    store.ScanTriggerPipeline,
+		Verdict:    store.ScanVerdict(scan.VerdictPass),
+		TextOnlyOK: true,
+		ScannedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("seed nanoinfra scan: %v", err)
+	}
+
+	vtID, err := apiHandler.Store.CreateVirusTotalScan(ctx, svID, "analysis-double", time.Now())
+	if err != nil {
+		t.Fatalf("seed virustotal scan: %v", err)
+	}
+	if err := apiHandler.Store.UpdateVirusTotalScanResult(ctx, vtID, 3, 1, 60, 6, "https://www.virustotal.com/gui/file-analysis/analysis-double", time.Now()); err != nil {
+		t.Fatalf("update virustotal scan result: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/double-audited", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "NanoInfra Scanner") {
+		t.Errorf("expected the NanoInfra Scanner audit to be listed, got: %s", body)
+	}
+	if !strings.Contains(body, "VirusTotal") {
+		t.Errorf("expected the VirusTotal audit to be listed, got: %s", body)
+	}
+	if !strings.Contains(body, "4/70 engines flagged this file") {
+		t.Errorf("expected the VirusTotal engine-count detail, got: %s", body)
+	}
+	// 3 malicious engines => "fail", rendered as the FAIL badge.
+	if !strings.Contains(body, "FAIL") {
+		t.Errorf("expected a FAIL badge for a malicious virustotal verdict, got: %s", body)
+	}
+}
+
+func TestSkillDetail_NoVirusTotalRowShowsOnlyNanoinfraScannerAudit(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	svID, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "single-audited", Version: 1, SubmissionID: "seed-single-audited", DisplayName: "Single Audited",
+		Description: "no virustotal row", GitHubPath: "single-audited/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	})
+	if err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "single-audited", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateScan(ctx, store.Scan{
+		TargetType: store.ScanTargetSkillVersion,
+		TargetID:   api.ScanIDString(svID),
+		Trigger:    store.ScanTriggerPipeline,
+		Verdict:    store.ScanVerdict(scan.VerdictPass),
+		TextOnlyOK: true,
+		ScannedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("seed nanoinfra scan: %v", err)
+	}
+	// Deliberately no CreateVirusTotalScan call -- mirrors VirusTotal being
+	// unconfigured, or the fire-and-forget upload having failed.
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/single-audited", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "NanoInfra Scanner") {
+		t.Errorf("expected the NanoInfra Scanner audit to be listed, got: %s", body)
+	}
+	if strings.Contains(body, "VirusTotal") {
+		t.Errorf("expected no VirusTotal audit entry when no row exists, got: %s", body)
+	}
+}
+
 func TestSkillDetail_NoScanShowsPendingAudit(t *testing.T) {
 	h, apiHandler, _ := testHandler(t)
 	mux := newMux(h)

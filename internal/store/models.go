@@ -168,6 +168,54 @@ const (
 	ScanVerdictBlocked ScanVerdict = "blocked"
 )
 
+// VirusTotalScanStatus is the lifecycle state of one VirusTotal analysis
+// row. See internal/virustotal's package doc comment for the full
+// upload-then-poll design this tracks.
+type VirusTotalScanStatus string
+
+const (
+	// VirusTotalScanPending means the archive was uploaded and VirusTotal
+	// accepted it for analysis, but the analysis hasn't completed yet (or
+	// the background poller hasn't successfully checked on it yet).
+	VirusTotalScanPending VirusTotalScanStatus = "pending"
+	// VirusTotalScanCompleted means the analysis finished and its
+	// per-engine stats were recorded.
+	VirusTotalScanCompleted VirusTotalScanStatus = "completed"
+	// VirusTotalScanError means the poller got a definitive response from
+	// VirusTotal but it wasn't in the expected shape (see
+	// internal/virustotal.ErrMalformedAnalysis) -- a permanent failure for
+	// this one analysis, not a transient network/rate-limit error (which
+	// leaves the row "pending" for the next tick to retry instead).
+	VirusTotalScanError VirusTotalScanStatus = "error"
+)
+
+// VirusTotalScan is one persisted VirusTotal analysis row: one per
+// fire-and-forget upload triggered by a successful publish
+// (internal/api/admin.go's ApproveSubmissionCore), later filled in by the
+// background poller (internal/virustotal) once VirusTotal's multi-engine
+// analysis completes. Unlike Scan (our own scan shield, synchronous and
+// always resolved by the time a row exists), a VirusTotalScan row can sit
+// "pending" for anywhere from seconds to a couple of minutes.
+//
+// The count/permalink fields are nil until Status is "completed"; ErrorDetail
+// is nil unless Status is "error". Both are pointers rather than
+// zero-valuable ints/strings so a genuinely-zero count ("0 engines flagged
+// this file") is never confused with "not yet known".
+type VirusTotalScan struct {
+	ID              int64
+	SkillVersionID  int64
+	AnalysisID      string
+	Status          VirusTotalScanStatus
+	MaliciousCount  *int64
+	SuspiciousCount *int64
+	HarmlessCount   *int64
+	UndetectedCount *int64
+	Permalink       *string
+	ErrorDetail     *string
+	CreatedAt       time.Time
+	CheckedAt       time.Time
+}
+
 // Scan is one persisted run of the security scan shield (internal/scan)
 // against either a pending submission's archive or a published skill
 // version's archive.
