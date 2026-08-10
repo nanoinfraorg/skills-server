@@ -111,10 +111,11 @@ func main() {
 	}
 
 	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
-		Store:        db,
-		Logger:       logger,
-		PublishedDir: cfg.PublishedDir,
-		ScanConfig:   scanConfig,
+		Store:            db,
+		Logger:           logger,
+		PublishedDir:     cfg.PublishedDir,
+		ScanConfig:       scanConfig,
+		VirusTotalClient: vtClient,
 	})
 
 	// The VirusTotal background poller only runs when the integration is

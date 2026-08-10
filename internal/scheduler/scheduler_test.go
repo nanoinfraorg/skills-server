@@ -4,16 +4,69 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
+
+// fakeVTClient stands in for a real VirusTotal client, exactly like
+// internal/api's fakeVTClient -- no test in this package ever makes a real
+// call to VirusTotal. Concurrency-safe because backfillVirusTotal's upload
+// runs in its own goroutine.
+type fakeVTClient struct {
+	mu          sync.Mutex
+	uploadCalls int
+	uploadErr   error
+}
+
+func (f *fakeVTClient) Upload(_ context.Context, r io.Reader, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploadCalls++
+	if f.uploadErr != nil {
+		return "", f.uploadErr
+	}
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return "", err
+	}
+	return "analysis-backfill", nil
+}
+
+func (f *fakeVTClient) GetAnalysis(context.Context, string) (*virustotal.Analysis, error) {
+	return nil, errors.New("fakeVTClient: GetAnalysis is not exercised by these tests")
+}
+
+func (f *fakeVTClient) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.uploadCalls
+}
+
+// waitForCondition polls cond until it's true or timeout elapses, failing
+// the test in the latter case -- used for the backfill upload, which runs
+// in a background goroutine.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition not met within %s", timeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 const cleanSkillMD = "---\nname: my-skill\ndescription: does a thing.\n---\n\nBody.\n"
 
@@ -176,5 +229,76 @@ func TestRunOnce_DoesNotFailOnMissingArchive(t *testing.T) {
 	}
 	if detail.Status != store.SkillVersionPublished {
 		t.Errorf("status = %s, want published (unchanged)", detail.Status)
+	}
+}
+
+func TestRunOnce_BackfillsVirusTotalForPreExistingSkill(t *testing.T) {
+	deps, db := testDeps(t)
+	vt := &fakeVTClient{}
+	deps.VirusTotalClient = vt
+	ctx := context.Background()
+
+	archive := buildZip(t, map[string]string{"SKILL.md": cleanSkillMD})
+	publishSkill(t, db, deps.PublishedDir, "my-skill", archive)
+	sv, err := db.GetSkillVersion(ctx, "my-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+
+	RunOnce(ctx, deps)
+
+	waitForCondition(t, time.Second, func() bool { return vt.calls() == 1 })
+
+	row, err := db.GetLatestVirusTotalScan(ctx, sv.ID)
+	if err != nil {
+		t.Fatalf("get latest virustotal scan: %v", err)
+	}
+	if row.Status != store.VirusTotalScanPending {
+		t.Errorf("status = %s, want pending", row.Status)
+	}
+}
+
+func TestRunOnce_DoesNotReuploadVirusTotalWhenRowAlreadyExists(t *testing.T) {
+	deps, db := testDeps(t)
+	vt := &fakeVTClient{}
+	deps.VirusTotalClient = vt
+	ctx := context.Background()
+
+	archive := buildZip(t, map[string]string{"SKILL.md": cleanSkillMD})
+	publishSkill(t, db, deps.PublishedDir, "my-skill", archive)
+	sv, err := db.GetSkillVersion(ctx, "my-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+	if _, err := db.CreateVirusTotalScan(ctx, sv.ID, "existing-analysis", time.Now()); err != nil {
+		t.Fatalf("seed existing virustotal scan: %v", err)
+	}
+
+	RunOnce(ctx, deps)
+
+	// Give a wrongly-firing backfill goroutine a moment to have shown up,
+	// then assert it never did.
+	time.Sleep(20 * time.Millisecond)
+	if got := vt.calls(); got != 0 {
+		t.Errorf("uploadCalls = %d, want 0 (version already has a virustotal scan row)", got)
+	}
+}
+
+func TestRunOnce_SkipsVirusTotalBackfillWhenNotConfigured(t *testing.T) {
+	deps, db := testDeps(t)
+	// deps.VirusTotalClient left nil -- mirrors VIRUSTOTAL_API_KEY unset.
+	ctx := context.Background()
+
+	archive := buildZip(t, map[string]string{"SKILL.md": cleanSkillMD})
+	publishSkill(t, db, deps.PublishedDir, "my-skill", archive)
+	sv, err := db.GetSkillVersion(ctx, "my-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+
+	RunOnce(ctx, deps)
+
+	if _, err := db.GetLatestVirusTotalScan(ctx, sv.ID); err != store.ErrNotFound {
+		t.Errorf("expected no virustotal scan row when unconfigured, got err=%v", err)
 	}
 }
