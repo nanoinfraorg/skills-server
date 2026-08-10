@@ -157,6 +157,19 @@ party):
    expected shape, the row flips to `error` instead (so the poller stops
    spending API calls on something that will never resolve) -- a
    different failure mode from a transient one, which stays `pending`.
+3. **Backfill, in the daily scheduler.** A skill version published before
+   `VIRUSTOTAL_API_KEY` was ever set has no `virustotal_scans` row and so
+   never shows a VirusTotal entry -- the exact same "published before the
+   feature existed" gap the daily scheduler's own scan-shield re-scan
+   already exists to close (see above). So each daily pass
+   (`internal/scheduler.RunOnce`) also checks, for every active skill's
+   current version, whether a `virustotal_scans` row exists yet; if not
+   (and VirusTotal is configured), it uploads exactly once, the same
+   fire-and-forget way `ApproveSubmissionCore` does. A version that
+   already has a row -- in any status, including `error` -- is never
+   re-uploaded: this backfill is a one-time catch-up per version, not a
+   recurring re-check, so it can't turn into a second daily source of
+   VirusTotal API calls on top of the poller's own.
 
 **Verdict mapping.** `internal/virustotal.ComputeVerdict(malicious,
 suspicious int64) string` maps the completed stats to the Security Audits

@@ -4,17 +4,29 @@
 // that were published before the shield existed, or whose content the
 // shield's deterministic checks would now flag for some other reason (e.g.
 // a pattern added after publish).
+//
+// It also backfills the optional VirusTotal check (internal/virustotal) for
+// exactly the same reason: a skill version published before VirusTotal was
+// configured has no virustotal_scans row and so never shows that entry on
+// its Security Audits panel. Each pass uploads at most once per skill
+// version -- a version that already has a virustotal_scans row (whatever
+// its status) is never re-uploaded, so this can't turn into a daily re-scan
+// against VirusTotal's rate-limited API for skills that already got their
+// one-time check.
 package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
 // Deps holds everything the scheduler needs to run one pass.
@@ -23,6 +35,11 @@ type Deps struct {
 	Logger       *slog.Logger
 	PublishedDir string
 	ScanConfig   scan.Config
+	// VirusTotalClient optionally backfills a missing VirusTotal check (see
+	// the package doc comment). Nil skips this entirely -- same "unset means
+	// skip, not a placeholder" behavior as everywhere else this client is
+	// threaded through.
+	VirusTotalClient virustotal.Client
 	// Now returns the current time; overridable in tests for determinism.
 	Now func() time.Time
 }
@@ -99,7 +116,35 @@ func RunOnce(ctx context.Context, deps Deps) {
 			quarantined++
 			deps.Logger.Warn("daily scan: quarantined skill version", "skill_id", sk.SkillID, "version", sk.Version)
 		}
+
+		backfillVirusTotal(ctx, deps, sk.SkillID, sv.ID, archivePath)
 	}
 
 	deps.Logger.Info("daily scan run complete", "scanned", scanned, "quarantined", quarantined, "total_active", len(skills))
+}
+
+// backfillVirusTotal uploads archivePath to VirusTotal for skillVersionID
+// if (and only if) VirusTotal is configured and no virustotal_scans row
+// exists yet for that version -- see the package doc comment. A row in any
+// status (pending, completed, or error) counts as "already handled" and is
+// left alone; this function never re-uploads or retries on VirusTotal's
+// behalf, that's internal/virustotal's poller's job for a row it already
+// created.
+func backfillVirusTotal(ctx context.Context, deps Deps, skillID string, skillVersionID int64, archivePath string) {
+	if deps.VirusTotalClient == nil {
+		return
+	}
+	if _, err := deps.Store.GetLatestVirusTotalScan(ctx, skillVersionID); err == nil {
+		return // already has a row, whatever its status -- nothing to backfill
+	} else if !errors.Is(err, store.ErrNotFound) {
+		deps.Logger.Warn("daily scan: could not check existing virustotal scan", "skill_id", skillID, "error", err)
+		return
+	}
+
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		deps.Logger.Warn("daily scan: could not read archive for virustotal backfill", "skill_id", skillID, "error", err)
+		return
+	}
+	go virustotal.UploadAndRecord(context.Background(), deps.VirusTotalClient, deps.Store, deps.Logger, deps.now, skillVersionID, archive, skillID+".zip")
 }
