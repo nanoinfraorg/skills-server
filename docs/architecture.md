@@ -183,18 +183,27 @@ panel's `pass`/`warn`/`fail` vocabulary:
   human-review flag rather than a hard finding.
 - `pass` otherwise.
 
-**Deliberate scoping decision: no auto-quarantine.** Unlike the scan
-shield's daily re-scan, which quarantines a skill the moment it comes
-back `blocked`, nothing in `internal/virustotal` ever calls
-`store.SetSkillVersionStatus`. Multiple independent AV engines produce
-false positives regularly enough (a heuristic "suspicious" verdict on a
-handful of engines, out of ~70, is common for entirely legitimate
-scripts) that auto-quarantining on a VirusTotal finding alone would be a
-much bigger policy decision than "add a badge to a panel". This phase
-only records and displays the result; deciding whether/how a VirusTotal
-finding should ever affect a skill's availability is left for later, and
-is called out explicitly in `internal/virustotal/poller.go`'s doc
-comments.
+**Auto-quarantine, but only on `fail`.** A completed analysis whose
+verdict is `fail` (at least one engine reports the file outright
+malicious -- a real cross-engine detection, not a guess) quarantines the
+skill version the same way the scan shield's own `blocked` verdict
+already does (`store.SetSkillVersionStatus`, in
+`internal/virustotal/poller.go`'s `quarantineOnFailVerdict`). A `warn`
+verdict (suspicious-only) never does: heuristic "suspicious" flags on a
+handful of engines, out of ~70, are common enough for entirely legitimate
+scripts that treating that softer tier as a hard finding would quarantine
+real skills too often -- it stays a badge for a human to weigh. The gap
+this leaves is that a skill is already live on GitHub and the public
+marketplace for however long VirusTotal's analysis takes (seconds to a
+couple of minutes) before a `fail` verdict can pull it -- unavoidable
+given VirusTotal's async nature, but real; the scan shield's own
+synchronous checks (which do gate the initial publish) are what catch
+most bad skills before this window ever opens.
+
+The Security Audits panel also links each completed VirusTotal entry to
+its own permalink -- VirusTotal's GUI page with the full per-engine
+breakdown (which specific engine flagged it, and as what) -- since the
+panel itself only ever shows aggregate counts.
 
 Data lives in its own `virustotal_scans` table (not a column on `scans`):
 VirusTotal's shape -- an analysis id, per-engine stats, a permalink --

@@ -384,11 +384,14 @@ func TestSkillDetail_ShowsBothAuditsWhenVirusTotalRowExists(t *testing.T) {
 		t.Errorf("expected the VirusTotal audit to be listed, got: %s", body)
 	}
 	if !strings.Contains(body, "4/70 engines flagged this file") {
-		t.Errorf("expected the VirusTotal engine-count detail, got: %s", body)
+		t.Errorf("expected the VirusTotal engine-count detail as visible text, got: %s", body)
 	}
 	// 3 malicious engines => "fail", rendered as the FAIL badge.
 	if !strings.Contains(body, "FAIL") {
 		t.Errorf("expected a FAIL badge for a malicious virustotal verdict, got: %s", body)
+	}
+	if !strings.Contains(body, `href="https://www.virustotal.com/gui/file-analysis/analysis-double"`) {
+		t.Errorf("expected a visible link to VirusTotal's own full report, got: %s", body)
 	}
 }
 

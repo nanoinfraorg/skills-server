@@ -203,6 +203,14 @@ the LLM classification pass already has. `internal/web/pages.go`'s
 `virusTotalAudit` does this mapping and deliberately never surfaces a
 row's raw `error_detail` text on this public, unauthenticated page.
 
+Each row's detail text (e.g. "3/70 engines flagged this file") is shown
+as plain visible text next to its badge, not just a hover tooltip. A
+completed VirusTotal entry also links to its own permalink -- VirusTotal's
+GUI page with the full per-engine breakdown (which specific engine
+flagged it, and as what), since the panel itself only shows aggregate
+counts. See [architecture.md](architecture.md#virustotal-integration) for
+when a `fail` verdict additionally quarantines the skill version.
+
 ## Two ways to submit: zip upload or pasted SKILL.md
 
 `POST /submit` accepts either a `.zip` file (the `archive` multipart field,

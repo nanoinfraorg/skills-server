@@ -352,6 +352,25 @@ func (s *Store) GetSkillVersion(ctx context.Context, skillID string, version int
 	return sv, nil
 }
 
+// GetSkillVersionByID fetches a skill_versions row by its own internal
+// auto-increment id (as opposed to GetSkillVersion's skill_id+version
+// lookup) -- used by internal/virustotal's poller, which only has the
+// skill_version_id a virustotal_scans row points at and needs the actual
+// skill_id/version pair to call SetSkillVersionStatus.
+func (s *Store) GetSkillVersionByID(ctx context.Context, id int64) (*SkillVersion, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
+		FROM skill_versions WHERE id = ?`, id)
+	sv, err := scanSkillVersion(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query skill version by id: %w", err)
+	}
+	return sv, nil
+}
+
 // ListSkillVersions returns every version of skillID, newest first.
 func (s *Store) ListSkillVersions(ctx context.Context, skillID string) ([]SkillVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
