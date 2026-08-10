@@ -20,8 +20,8 @@ validation, publishing, scanning, or persistence.
 |---|---|---|
 | `GET /` | none | Home: "Sign in with Google" if signed out; a welcome + nav links if signed in. |
 | `GET /skills` | none | Public directory: `?q=...` searches (same as `GET /api/v1/search`); no query shows trending (same as `GET /api/v1/trending`). |
-| `GET /skills/{id}` | none | Detail + full version history (same as `GET /api/v1/skills/{id}` + `.../versions`). A quarantined current version is shown, clearly marked, not hidden. |
-| `GET /submit` | submitter or admin session | Upload form: `skill_id`, `display_name`, a `.zip` file. There is no submitter field -- it's always the session's verified email. |
+| `GET /skills/{id}` | none | Detail + full version history (same as `GET /api/v1/skills/{id}` + `.../versions`), plus the current version's actual `SKILL.md` content and a flat listing of every file in its archive (read from the local `PublishedDir/<id>.zip` copy). A quarantined current version is shown, clearly marked, not hidden. A logged-in session sees an "Edit / submit new version" link to `/submit?skill_id=<id>`. |
+| `GET /submit` | submitter or admin session | Submission form: `skill_id`, `display_name`, and either a `.zip` file *or* a `SKILL.md` textarea (see below). There is no submitter field -- it's always the session's verified email. An optional `?skill_id=<id>` pre-fills the form with that skill's current display name and `SKILL.md` content and locks the `skill_id` field (readonly), for the "Edit / submit new version" link from the detail page. |
 | `POST /submit` | submitter or admin session, CSRF | Validates and creates the submission via `CreateSubmissionCore`. Redirects to `/my/submissions` on success; re-renders the form with the same inline error text the JSON API would return on failure. |
 | `GET /my/submissions` | any session | The session's own submissions and their status (`store.Store.ListSubmissionsBySubmitter`, added for this page). |
 | `GET /admin` | admin session | Pending submissions (with latest scan verdict, if any) and every published skill (with quarantine status), each with a CSRF-protected form action. |
@@ -41,6 +41,48 @@ instead of a redirect loop.
 on success instead of returning a standalone confirmation string, so login
 lands back in the UI. Its error responses (`400`/`403`/`502`) are
 unchanged.
+
+## Skill contents on the detail page
+
+`GET /skills/{id}` reads the skill's locally-archived zip copy
+(`PublishedDir/<id>.zip` -- the same file `GET /api/v1/skills/{id}/download`
+serves) via `internal/pipeline`'s existing zip helpers (`ValidateArchive`
+for the entry listing, `ReadFiles` for content) and renders the current
+version's `SKILL.md` text plus a flat listing of every entry in the archive
+(`scripts/`, `references/`, `assets/`, whatever it contains). `SKILL.md` is
+rendered as plain escaped text inside a `<pre>` block -- `html/template`
+auto-escapes it by default -- deliberately *not* rendered as Markdown-to-HTML,
+since that would open an XSS surface on untrusted, third-party-submitted
+content for purely cosmetic benefit (see
+[design-choices.md](design-choices.md)). If the archive is missing or
+unreadable, the page still renders (metadata only) with a fallback message;
+this is logged as a warning, since every published skill should have one.
+
+## Two ways to submit: zip upload or pasted SKILL.md
+
+`POST /submit` accepts either a `.zip` file (the `archive` multipart field,
+as before) or a plain `SKILL.md` string (the `skill_md` textarea field). If
+`archive` is present it's used; otherwise a non-empty `skill_md` is
+materialized into an in-memory, single-entry zip (`archive/zip` into a
+`bytes.Buffer`, no temp file -- see `buildSkillMDZip` in
+`internal/web/pages.go`) and used instead. Either way, exactly one
+`io.Reader` over zip bytes reaches `CreateSubmissionCore` -- the same
+function a real multipart upload always used -- so there is no second
+validation or pipeline path for "text mode": a pasted `SKILL.md` missing
+`name`/`description`, or whose `name` doesn't match the posted `skill_id`,
+is rejected by the exact same `pipeline.ValidateArchive` check a zip upload
+would fail. Submitting with neither field is a `400`.
+
+There is no separate "edit" concept. The skill detail page's "Edit / submit
+new version" link (`/submit?skill_id=<id>`) only pre-fills this same form
+with the existing skill's display name and current `SKILL.md` content
+(read the same way as the detail page, above) and renders `skill_id`
+read-only -- a UI hint against accidentally retargeting the edit at a
+different skill, not a server-side lock. The resulting `POST` is handled
+identically to any other submission: it goes through the normal
+pending → admin approve → pipeline → publish flow, and (like the pre-existing
+"re-submitting an already-published `skill_id` is a new version, not an
+error" behavior) creates a new version of that `skill_id` once approved.
 
 ## CSRF protection
 

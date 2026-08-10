@@ -1,10 +1,14 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -83,13 +87,28 @@ type skillDetailPageData struct {
 	basePage
 	Skill    store.SkillDetail
 	Versions []store.SkillVersion
+	// Content is the current version's SKILL.md text, read straight out of
+	// the locally-archived zip copy (see skillMDAndFiles) and rendered
+	// verbatim in a <pre> block -- html/template auto-escapes it, so no
+	// Markdown rendering or sanitization step is needed or wanted (see
+	// docs/design-choices.md on why submitted content is never rendered as
+	// HTML). Empty if the archive couldn't be read.
+	Content string
+	// Files lists every entry (path + size) in that same archive -- SKILL.md
+	// itself plus any scripts/references/assets -- so a visitor can see the
+	// skill's actual shape without downloading and unzipping it. Nil if the
+	// archive couldn't be read.
+	Files []pipeline.Entry
 }
 
 // SkillDetail renders "/skills/{id}": the current version's description,
-// download link, and full version history, all from the same store
-// queries GET /api/v1/skills/{id} and GET /api/v1/skills/{id}/versions
-// use. A quarantined current version is shown, clearly marked, exactly
-// like the JSON API's own detail endpoint does -- not hidden.
+// download link, full version history, the current version's actual
+// SKILL.md content, and a listing of every file in its archive, all from
+// the same store queries GET /api/v1/skills/{id} and
+// GET /api/v1/skills/{id}/versions use, plus a local read of the archived
+// zip (see skillMDAndFiles). A quarantined current version is shown,
+// clearly marked, exactly like the JSON API's own detail endpoint does --
+// not hidden.
 func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFromRequest(r)
 	id := r.PathValue("id")
@@ -112,20 +131,86 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A missing/unreadable archive is not fatal to the page -- the metadata
+	// above still renders -- but is logged, since it shouldn't happen for
+	// any skill that has actually been published (see docs/design-choices.md
+	// on the local archived copy being the durable read path).
+	content, files, err := h.skillMDAndFiles(skill.SkillID)
+	if err != nil {
+		h.Logger.Warn("load skill contents for detail page", "error", err, "skill_id", id)
+	}
+
 	h.render(w, http.StatusOK, "skill_detail.html", skillDetailPageData{
 		basePage: basePage{Title: skill.DisplayName, User: navUser(sess)},
 		Skill:    *skill,
 		Versions: versions,
+		Content:  content,
+		Files:    files,
 	})
+}
+
+// skillMDAndFiles reads a published skill's locally-archived zip copy
+// (PublishedDir/<skill_id>.zip -- the same file DownloadSkill already
+// serves) and returns its current SKILL.md content plus a flat listing of
+// every entry in the archive. It reuses internal/pipeline's existing
+// zip-reading helpers -- ValidateArchive for the path-safe entry listing,
+// ReadFiles for full content -- rather than opening the zip a second,
+// independent way.
+//
+// Used by SkillDetail (to show a skill's actual contents, not just its
+// metadata) and by the edit-prefill path in SubmitForm (to pre-populate the
+// submit form's textarea with the current version's content).
+func (h *Handler) skillMDAndFiles(skillID string) (content string, files []pipeline.Entry, err error) {
+	archivePath := filepath.Join(h.API.PublishedDir, skillID+".zip")
+
+	// expectedSkillID is passed as "" -- this is a read for display, not a
+	// re-validation of a new submission, so there's no separate "expected"
+	// id to check the frontmatter against.
+	result, err := pipeline.ValidateArchive(archivePath, "")
+	if err != nil {
+		return "", nil, err
+	}
+
+	var mdEntry *pipeline.Entry
+	for i := range result.Entries {
+		if result.Entries[i].Name == pipeline.RootSkillFile {
+			mdEntry = &result.Entries[i]
+			break
+		}
+	}
+	if mdEntry == nil {
+		// ValidateArchive already guarantees a root SKILL.md exists;
+		// unreachable in practice, kept as a defensive fallback.
+		return "", result.Entries, fmt.Errorf("archive does not contain a root %s", pipeline.RootSkillFile)
+	}
+
+	contents, err := pipeline.ReadFiles(archivePath, []pipeline.Entry{*mdEntry})
+	if err != nil || len(contents) != 1 {
+		return "", result.Entries, fmt.Errorf("could not read %s: %w", pipeline.RootSkillFile, err)
+	}
+	return string(contents[0].Content), result.Entries, nil
 }
 
 // submitPageData is the data shape for submit.html.
 type submitPageData struct {
 	basePage
-	CSRFToken   string
-	SkillID     string
-	DisplayName string
-	Error       string
+	CSRFToken string
+	SkillID   string
+	// SkillIDLocked is true when the form was reached via the "Edit / submit
+	// new version" link on an existing skill's detail page (?skill_id=...),
+	// so the skill_id field is rendered read-only: changing it here would
+	// silently start a *different* skill instead of a new version of this
+	// one. It's a UI guard only (the server does not special-case an "edit"
+	// submission -- see SubmitCreate's doc comment), so it's false for a
+	// fresh submission where the field is freely editable.
+	SkillIDLocked bool
+	DisplayName   string
+	// SkillMD is the textarea's pre-filled content: empty for a fresh
+	// submission, or the current version's actual SKILL.md text when
+	// editing (see SubmitForm), or whatever the visitor last typed if a
+	// previous POST to this same page failed validation.
+	SkillMD string
+	Error   string
 }
 
 // SubmitForm renders "/submit" (GET): the upload form. Requires a
@@ -134,12 +219,40 @@ type submitPageData struct {
 // "sign up" flow -- the first Google login already grants submitter access
 // per the permissive-by-default SUBMITTER_EMAILS policy (see
 // docs/authentication.md).
+//
+// An optional ?skill_id=<id> query parameter is the edit entry point linked
+// from the skill detail page: when it names an existing published skill,
+// the form is pre-filled with that skill's display name and its current
+// version's actual SKILL.md content (via skillMDAndFiles), and the
+// skill_id field is locked (SkillIDLocked) so the edit can't accidentally
+// turn into a new skill under a different id. There is no separate
+// "edit" concept beyond this pre-fill -- the resulting POST is a normal
+// submission for an existing skill_id, handled identically to any other
+// (see SubmitCreate). An id that doesn't resolve to a real skill falls
+// through to a plain, unlocked form: there's nothing yet to edit.
 func (h *Handler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 	sess, ok := h.requireSession(w, r, store.SessionRoleSubmitter)
 	if !ok {
 		return
 	}
-	h.renderSubmitForm(w, http.StatusOK, sess, submitPageData{})
+
+	data := submitPageData{}
+	if editID := strings.TrimSpace(r.URL.Query().Get("skill_id")); editID != "" {
+		if skill, err := h.API.Store.GetSkillDetail(r.Context(), editID); err == nil {
+			data.SkillID = editID
+			data.DisplayName = skill.DisplayName
+			data.SkillIDLocked = true
+			if content, _, cerr := h.skillMDAndFiles(editID); cerr == nil {
+				data.SkillMD = content
+			} else {
+				h.Logger.Warn("load current SKILL.md for edit prefill", "error", cerr, "skill_id", editID)
+			}
+		} else if !errors.Is(err, store.ErrNotFound) {
+			h.Logger.Error("get skill detail for edit prefill", "error", err, "skill_id", editID)
+		}
+	}
+
+	h.renderSubmitForm(w, http.StatusOK, sess, data)
 }
 
 func (h *Handler) renderSubmitForm(w http.ResponseWriter, status int, sess *store.Session, data submitPageData) {
@@ -151,11 +264,28 @@ func (h *Handler) renderSubmitForm(w http.ResponseWriter, status int, sess *stor
 // SubmitCreate handles "/submit" (POST): validates and creates the
 // submission via api.Handler.CreateSubmissionCore -- the exact same
 // validate-then-store logic the JSON API's POST /api/v1/submissions uses,
-// just fed from an HTML multipart form instead of a client's own multipart
-// request. The submitter is always the logged-in session's verified email,
-// never a form field (there is no submitter field on this form at all,
-// matching the override behavior CreateSubmission already applies to a
+// just fed from an HTML form instead of a client's own multipart request.
+// The submitter is always the logged-in session's verified email, never a
+// form field (there is no submitter field on this form at all, matching
+// the override behavior CreateSubmission already applies to a
 // session-authenticated JSON request).
+//
+// Two input modes converge here on one archive io.Reader before either
+// ever reaches CreateSubmissionCore: a real uploaded .zip file (the
+// "archive" form field), or -- if none was attached -- a pasted/edited
+// SKILL.md string (the "skill_md" textarea field) materialized into an
+// equivalent single-entry zip by buildSkillMDZip. From CreateSubmissionCore's
+// perspective the two are indistinguishable: it only ever sees "an
+// io.Reader over zip bytes", exactly as it does for the JSON API's own
+// multipart upload. There is no second validation or pipeline path for
+// "text mode".
+//
+// This is also how editing an existing skill works: there is no separate
+// "edit" submission kind. The skill detail page's "Edit / submit new
+// version" link (see SkillDetail) just pre-fills this same form (see
+// SubmitForm) with the current version's content; submitting it is a
+// perfectly normal call to CreateSubmissionCore for an already-published
+// skill_id, exactly like re-uploading a changed zip already works.
 //
 // On success, redirects to "/my/submissions" so the submitter immediately
 // sees their new pending submission. On failure, re-renders the form with
@@ -182,36 +312,74 @@ func (h *Handler) SubmitCreate(w http.ResponseWriter, r *http.Request) {
 
 	skillID := strings.TrimSpace(r.FormValue("skill_id"))
 	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	skillMD := r.FormValue("skill_md")
 
 	if !validCSRF(r, sess) {
 		http.Error(w, "invalid or missing csrf token", http.StatusForbidden)
 		return
 	}
 
-	file, _, err := r.FormFile("archive")
-	if err != nil {
+	var archive io.Reader
+	if file, _, err := r.FormFile("archive"); err == nil {
+		defer file.Close()
+		archive = file
+	} else if strings.TrimSpace(skillMD) != "" {
+		zipBytes, zerr := buildSkillMDZip(skillMD)
+		if zerr != nil {
+			h.Logger.Error("build in-memory zip from pasted SKILL.md", "error", zerr)
+			h.renderSubmitForm(w, http.StatusInternalServerError, sess, submitPageData{
+				SkillID: skillID, DisplayName: displayName, SkillMD: skillMD,
+				Error: "could not process the pasted SKILL.md content",
+			})
+			return
+		}
+		archive = bytes.NewReader(zipBytes)
+	} else {
 		h.renderSubmitForm(w, http.StatusBadRequest, sess, submitPageData{
 			SkillID: skillID, DisplayName: displayName,
-			Error: "a .zip archive is required",
+			Error: "either a .zip archive or SKILL.md text is required",
 		})
 		return
 	}
-	defer file.Close()
 
 	_, subErr := h.API.CreateSubmissionCore(r.Context(), api.SubmissionInput{
 		SkillID:     skillID,
 		DisplayName: displayName,
 		Submitter:   sess.Email,
-		Archive:     file,
+		Archive:     archive,
 	})
 	if subErr != nil {
 		h.renderSubmitForm(w, subErr.Status, sess, submitPageData{
-			SkillID: skillID, DisplayName: displayName, Error: subErr.Message,
+			SkillID: skillID, DisplayName: displayName, SkillMD: skillMD, Error: subErr.Message,
 		})
 		return
 	}
 
 	http.Redirect(w, r, "/my/submissions", http.StatusSeeOther)
+}
+
+// buildSkillMDZip materializes a pasted/edited SKILL.md string into an
+// in-memory zip archive containing exactly one entry (SKILL.md), entirely
+// in a bytes.Buffer -- no temp file. This is the only piece of code
+// specific to the textarea input mode; everything downstream of it
+// (validation, storage, the pending queue, publish) is the exact same path
+// a real uploaded zip already goes through, fed from the resulting
+// *bytes.Reader wrapped as the same io.Reader shape CreateSubmissionCore
+// already accepts.
+func buildSkillMDZip(content string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	entry, err := zw.Create(pipeline.RootSkillFile)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := entry.Write([]byte(content)); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // submissionRow is a template-friendly view of a store.Submission, used by

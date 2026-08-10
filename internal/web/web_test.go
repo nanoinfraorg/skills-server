@@ -17,6 +17,7 @@ import (
 
 	"github.com/nanoinfraorg/skills-server/internal/api"
 	"github.com/nanoinfraorg/skills-server/internal/github"
+	"github.com/nanoinfraorg/skills-server/internal/pipeline"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
 
@@ -291,6 +292,63 @@ func TestSkillDetail_QuarantinedShowsClearly(t *testing.T) {
 	}
 }
 
+// TestSkillDetail_RendersSKILLMDContentAndFileListing seeds a real,
+// archived zip copy at PublishedDir/<id>.zip (the same file DownloadSkill
+// serves) and confirms the detail page renders the actual SKILL.md body
+// text and lists every file in the archive, not just the skill's
+// name/version/description metadata.
+func TestSkillDetail_RendersSKILLMDContentAndFileListing(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	skillMD := "---\nname: delta\ndescription: renders real content.\n---\n\nDistinctive delta body text.\n"
+	archiveBytes := buildZip(t, map[string]string{
+		"SKILL.md":          skillMD,
+		"scripts/helper.sh": "#!/bin/sh\necho hi\n",
+	})
+	if err := os.WriteFile(filepath.Join(apiHandler.PublishedDir, "delta.zip"), archiveBytes, 0o644); err != nil {
+		t.Fatalf("seed published archive: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "delta", Version: 1, SubmissionID: "seed-delta", DisplayName: "Delta",
+		Description: "renders real content", GitHubPath: "delta/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "delta", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	// Anonymous: content/files render, but there's no edit entry point.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/delta", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Distinctive delta body text.") {
+		t.Errorf("expected the page to render the real SKILL.md content, body: %s", body)
+	}
+	if !strings.Contains(body, "scripts/helper.sh") {
+		t.Errorf("expected a file listing including scripts/helper.sh, body: %s", body)
+	}
+	if strings.Contains(body, "Edit / submit new version") {
+		t.Errorf("anonymous visitor should not see the edit link, body: %s", body)
+	}
+
+	// Logged in: same content, plus the edit entry point.
+	cookie := seedSession(t, apiHandler, "viewer@example.com", store.SessionRoleSubmitter, "csrf-viewer")
+	req := httptest.NewRequest(http.MethodGet, "/skills/delta", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if !strings.Contains(body, `href="/submit?skill_id=delta"`) {
+		t.Errorf("expected a logged-in visitor to see the edit link to /submit?skill_id=delta, body: %s", body)
+	}
+}
+
 func TestSubmitForm_RedirectsAnonymousToLogin(t *testing.T) {
 	h, _, _ := testHandler(t)
 	mux := newMux(h)
@@ -319,6 +377,261 @@ func TestSubmitForm_RendersForSubmitterSession(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `name="csrf_token" value="csrf-1"`) {
 		t.Errorf("expected the form to embed the session's csrf token, body: %s", rec.Body.String())
+	}
+}
+
+// TestSubmitForm_EditPrefillPopulatesCurrentContent seeds a published skill
+// with a real archived copy, then confirms GET /submit?skill_id=<id>
+// pre-fills the form with that skill's current display name, its actual
+// SKILL.md content, and locks the skill_id field (readonly) so the edit
+// can't silently become a fresh submission under a different id.
+func TestSubmitForm_EditPrefillPopulatesCurrentContent(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	skillMD := skillMDFor("epsilon")
+	archiveBytes := buildZip(t, map[string]string{"SKILL.md": skillMD})
+	if err := os.WriteFile(filepath.Join(apiHandler.PublishedDir, "epsilon.zip"), archiveBytes, 0o644); err != nil {
+		t.Fatalf("seed published archive: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "epsilon", Version: 1, SubmissionID: "seed-epsilon", DisplayName: "Epsilon",
+		Description: "Test skill epsilon.", GitHubPath: "epsilon/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "epsilon", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	cookie := seedSession(t, apiHandler, "editor@example.com", store.SessionRoleSubmitter, "csrf-edit")
+	req := httptest.NewRequest(http.MethodGet, "/submit?skill_id=epsilon", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, skillMD) {
+		t.Errorf("expected the textarea to be pre-filled with the current SKILL.md content, body: %s", body)
+	}
+	if !strings.Contains(body, `value="epsilon"`) {
+		t.Errorf("expected the skill_id field pre-filled with epsilon, body: %s", body)
+	}
+	if !strings.Contains(body, "readonly") {
+		t.Errorf("expected the skill_id field to be locked (readonly) when editing, body: %s", body)
+	}
+	if !strings.Contains(body, `value="Epsilon"`) {
+		t.Errorf("expected the display name pre-filled, body: %s", body)
+	}
+
+	// A fresh (non-edit) visit to /submit must NOT be locked.
+	freshReq := httptest.NewRequest(http.MethodGet, "/submit", nil)
+	freshReq.AddCookie(cookie)
+	freshRec := httptest.NewRecorder()
+	mux.ServeHTTP(freshRec, freshReq)
+	if strings.Contains(freshRec.Body.String(), "readonly") {
+		t.Errorf("a fresh submission's skill_id field must not be locked, body: %s", freshRec.Body.String())
+	}
+}
+
+// TestSubmitCreate_TextModeHappyPathCreatesRealPendingSubmission exercises
+// the second submission mode end to end: a pasted SKILL.md string instead
+// of an uploaded zip. It must produce a real pending submission whose
+// stored archive is an actual, valid, pipeline-validated zip -- i.e. the
+// textarea input converges on the exact same on-disk shape a real upload
+// produces, via the same CreateSubmissionCore call.
+func TestSubmitCreate_TextModeHappyPathCreatesRealPendingSubmission(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "texter@example.com", store.SessionRoleSubmitter, "csrf-text")
+
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "text-skill", "display_name": "Text Skill", "csrf_token": "csrf-text",
+		"skill_md": skillMDFor("text-skill"),
+	}, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303, body: %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/my/submissions" {
+		t.Errorf("Location = %q, want /my/submissions", loc)
+	}
+
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "texter@example.com")
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("expected 1 stored submission, err=%v subs=%+v", err, subs)
+	}
+	if subs[0].Status != store.StatusPending {
+		t.Errorf("status = %s, want pending", subs[0].Status)
+	}
+
+	result, err := pipeline.ValidateArchive(subs[0].ArchivePath, "text-skill")
+	if err != nil {
+		t.Fatalf("stored archive is not a valid, pipeline-validated zip: %v", err)
+	}
+	if result.Metadata.Name != "text-skill" {
+		t.Errorf("frontmatter name = %q, want text-skill", result.Metadata.Name)
+	}
+}
+
+// TestSubmitCreate_TextModeMissingFrontmatterFieldRejectedSameAsZip mirrors
+// TestSubmitCreate_InvalidArchiveShowsInlineError's zip-mode case (missing
+// required frontmatter) applied to the textarea path: the shared
+// CreateSubmissionCore/pipeline.ValidateArchive logic means this doesn't
+// need its own separate validation rules -- the same rejection applies.
+func TestSubmitCreate_TextModeMissingFrontmatterFieldRejectedSameAsZip(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "texter2@example.com", store.SessionRoleSubmitter, "csrf-text2")
+
+	badSkillMD := "---\nname: text-skill-2\n---\n\nMissing description field.\n"
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "text-skill-2", "display_name": "Text Skill 2", "csrf_token": "csrf-text2",
+		"skill_md": badSkillMD,
+	}, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body: %s", rec.Code, rec.Body.String())
+	}
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "texter2@example.com")
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("expected no stored submission for invalid frontmatter, err=%v subs=%+v", err, subs)
+	}
+}
+
+// TestSubmitCreate_TextModeNameMismatchRejectedSameAsZip mirrors the
+// zip-mode skill_id/frontmatter-name mismatch rejection for the textarea
+// path.
+func TestSubmitCreate_TextModeNameMismatchRejectedSameAsZip(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "texter3@example.com", store.SessionRoleSubmitter, "csrf-text3")
+
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "text-skill-3", "display_name": "Text Skill 3", "csrf_token": "csrf-text3",
+		"skill_md": skillMDFor("some-other-id"),
+	}, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match") {
+		t.Errorf("expected an inline name-mismatch error, body: %s", rec.Body.String())
+	}
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "texter3@example.com")
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("expected no stored submission for a name mismatch, err=%v subs=%+v", err, subs)
+	}
+}
+
+// TestSubmitCreate_NeitherArchiveNorTextRejected confirms a submission with
+// neither an uploaded zip nor pasted SKILL.md text is rejected with a
+// clear inline error rather than, say, silently creating an empty
+// submission.
+func TestSubmitCreate_NeitherArchiveNorTextRejected(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "empty@example.com", store.SessionRoleSubmitter, "csrf-empty")
+
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "empty-skill", "display_name": "Empty Skill", "csrf_token": "csrf-empty",
+	}, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "either a .zip archive or SKILL.md text is required") {
+		t.Errorf("expected the inline error explaining both modes are empty, body: %s", rec.Body.String())
+	}
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "empty@example.com")
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("expected no stored submission, err=%v subs=%+v", err, subs)
+	}
+}
+
+// TestSubmitCreate_EditPrefilledFormButPostingDifferentSkillIDStillValidatesNormally
+// confirms there is no separate "edit" code path with special-cased trust:
+// the skill_id field being rendered readonly on the edit-prefilled form is
+// a UI hint only, not a server-side lock. Posting a different skill_id
+// (with matching frontmatter) must succeed as a completely normal
+// submission for that new id; posting a skill_id that doesn't match the
+// frontmatter name must still be rejected exactly as it would for a fresh,
+// non-edit submission.
+func TestSubmitCreate_EditPrefilledFormButPostingDifferentSkillIDStillValidatesNormally(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	archiveBytes := buildZip(t, map[string]string{"SKILL.md": skillMDFor("original")})
+	if err := os.WriteFile(filepath.Join(apiHandler.PublishedDir, "original.zip"), archiveBytes, 0o644); err != nil {
+		t.Fatalf("seed published archive: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "original", Version: 1, SubmissionID: "seed-original", DisplayName: "Original",
+		Description: "Test skill original.", GitHubPath: "original/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "original", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	cookie := seedSession(t, apiHandler, "editor2@example.com", store.SessionRoleSubmitter, "csrf-editor2")
+
+	// GET the edit-prefilled form, as if the visitor clicked "Edit / submit
+	// new version" on /skills/original.
+	getReq := httptest.NewRequest(http.MethodGet, "/submit?skill_id=original", nil)
+	getReq.AddCookie(cookie)
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("edit prefill GET status = %d, want 200, body: %s", getRec.Code, getRec.Body.String())
+	}
+
+	// Post a different skill_id (with matching frontmatter) -- must go
+	// through completely normal validation and create a submission for the
+	// new id, not be silently rewritten back to "original" or rejected as
+	// tampering.
+	postReq := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "different-skill", "display_name": "Different Skill", "csrf_token": "csrf-editor2",
+		"skill_md": skillMDFor("different-skill"),
+	}, nil)
+	postRec := httptest.NewRecorder()
+	mux.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303, body: %s", postRec.Code, postRec.Body.String())
+	}
+
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "editor2@example.com")
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("expected 1 stored submission, err=%v subs=%+v", err, subs)
+	}
+	if subs[0].SkillID != "different-skill" {
+		t.Errorf("SkillID = %q, want different-skill (posted value wins, no hidden override)", subs[0].SkillID)
+	}
+
+	// The usual mismatch validation still applies: a skill_id that doesn't
+	// match the frontmatter name is rejected exactly as for a fresh,
+	// non-edit submission.
+	mismatchReq := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "yet-another-skill", "display_name": "Yet Another", "csrf_token": "csrf-editor2",
+		"skill_md": skillMDFor("original"), // frontmatter still says "original"
+	}, nil)
+	mismatchRec := httptest.NewRecorder()
+	mux.ServeHTTP(mismatchRec, mismatchReq)
+	if mismatchRec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body: %s", mismatchRec.Code, mismatchRec.Body.String())
 	}
 }
 

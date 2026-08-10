@@ -8,6 +8,10 @@
   <p><a href="/api/v1/skills/{{.Skill.SkillID}}/download" role="button">Download v{{.Skill.Version}}</a></p>
 {{end}}
 
+{{if .User}}
+  <p><a href="/submit?skill_id={{.Skill.SkillID}}" role="button" class="secondary">Edit / submit new version</a></p>
+{{end}}
+
 <p>{{.Skill.Description}}</p>
 <p><small>{{.Skill.Downloads}} download{{if ne .Skill.Downloads 1}}s{{end}} &middot; published {{.Skill.PublishedAt.Format "2006-01-02"}}</small></p>
 
@@ -24,4 +28,22 @@
   {{end}}
   </tbody>
 </table>
+
+<h2>Files</h2>
+{{if .Files}}
+  <ul>
+  {{range .Files}}
+    <li><code>{{.Name}}</code> <small>({{.Size}} bytes)</small></li>
+  {{end}}
+  </ul>
+{{else}}
+  <p><small>File listing is not available.</small></p>
+{{end}}
+
+<h2>SKILL.md</h2>
+{{if .Content}}
+  <pre>{{.Content}}</pre>
+{{else}}
+  <p><small>SKILL.md content is not available.</small></p>
+{{end}}
 {{end}}
