@@ -106,8 +106,8 @@ func TestGoogleCallback_ExpiredOrReusedStateRejected(t *testing.T) {
 	// First use succeeds.
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("first callback status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("first callback status = %d, want 302, body: %s", rec.Code, rec.Body.String())
 	}
 
 	// Reusing the same (now-consumed) state must be rejected.
@@ -143,8 +143,8 @@ func TestGoogleCallback_AdminEmailGetsAdminRole(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", rec.Code, rec.Body.String())
 	}
 
 	cookie := sessionCookieFromResponse(t, rec)
@@ -225,8 +225,8 @@ func TestGoogleCallback_SubmitterEmailInAllowlistGetsSubmitterRole(t *testing.T)
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", rec.Code, rec.Body.String())
 	}
 
 	cookie := sessionCookieFromResponse(t, rec)
@@ -249,8 +249,8 @@ func TestGoogleCallback_AnyEmailGetsSubmitterRoleWhenSubmitterEmailsUnset(t *tes
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", rec.Code, rec.Body.String())
 	}
 
 	cookie := sessionCookieFromResponse(t, rec)
@@ -312,8 +312,8 @@ func loginAsSession(t *testing.T, h *Handler, mux http.Handler, email string, ro
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, callbackRequest(state, "some-code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("callback status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302, body: %s", rec.Code, rec.Body.String())
 	}
 	return sessionCookieFromResponse(t, rec)
 }

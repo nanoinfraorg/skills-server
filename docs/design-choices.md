@@ -66,3 +66,22 @@ Judgment calls made where the spec left things open.
   third-party assertion library. Nothing in the test suite touches the
   network -- GitHub, the LLM call, and OAuth/OIDC are all faked or
   pointed at `httptest.Server`.
+- **Web UI: plain HTML forms, no htmx**: every form is a full-page
+  `<form>` POST with a redirect, not partial-page updates -- simple
+  enough, given zero existing JS tooling, that a vendored client-side
+  library wasn't judged to meaningfully simplify anything. See
+  [web-ui.md](web-ui.md).
+- **Web UI: CSRF token lives on the session row**, not a signed
+  double-submit cookie -- sessions already persist server-side in SQLite,
+  so validating the token is the same `store.GetSession` lookup the
+  handler already does to authenticate the request, with no second
+  cookie to mint or verify. See [web-ui.md](web-ui.md).
+- **`POST /auth/logout` keeps no CSRF requirement** even though the new
+  nav renders it as a form: a forged logout only logs the victim out (no
+  data read, changed, or exposed), and the endpoint is documented/tested
+  as callable via `curl` plus a bare session cookie, which adding a CSRF
+  requirement there would break.
+- **Pico CSS, vendored, not a CDN link**: a small, classless framework
+  (MIT) -- write semantic HTML, get a reasonably clean look, no utility
+  classes or build step. Consistent with this project's existing
+  no-outbound-dependency posture.

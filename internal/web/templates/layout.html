@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · skills-server</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+</head>
+<body>
+  <header class="container">
+    <nav>
+      <ul>
+        <li><strong><a href="/">skills-server</a></strong></li>
+      </ul>
+      <ul>
+        <li><a href="/skills">Browse skills</a></li>
+        {{if .User}}
+          <li><a href="/submit">Submit a skill</a></li>
+          <li><a href="/my/submissions">My submissions</a></li>
+          {{if .User.IsAdmin}}<li><a href="/admin">Admin dashboard</a></li>{{end}}
+          <li>
+            <form method="post" action="/auth/logout" style="display:inline">
+              <button type="submit" class="secondary outline">Log out ({{.User.Email}})</button>
+            </form>
+          </li>
+        {{else}}
+          <li><a href="/auth/google/login" role="button">Sign in with Google</a></li>
+        {{end}}
+      </ul>
+    </nav>
+  </header>
+  <main class="container">
+    {{template "content" .}}
+  </main>
+  <footer class="container">
+    <small>skills-server</small>
+  </footer>
+</body>
+</html>

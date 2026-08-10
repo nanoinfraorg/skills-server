@@ -40,6 +40,8 @@ go test ./... -count=1
 - [API reference](docs/api.md) -- every endpoint, with curl examples
 - [Authentication](docs/authentication.md) -- shared tokens and Google
   OAuth, side by side
+- [Web UI](docs/web-ui.md) -- the server-rendered HTML UI, its pages, and
+  its CSRF protection
 - [Deployment](docs/deployment.md) -- running locally, environment
   variables, Docker, CI/CD
 - [Design choices](docs/design-choices.md) -- judgment calls made where

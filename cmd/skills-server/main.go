@@ -22,6 +22,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/scheduler"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/web"
 )
 
 // shutdownTimeout bounds how long the HTTP server waits for in-flight
@@ -107,6 +108,12 @@ func main() {
 	})
 
 	mux := api.NewMux(handler)
+	// The HTML UI (internal/web) is registered onto the same mux as the
+	// JSON API: it takes every route the JSON API doesn't (/, /skills,
+	// /submit, /my/submissions, /admin, ...), calling through to the same
+	// *api.Handler -- its store queries and its shared "Core" business
+	// logic -- rather than duplicating any of it. See docs/web-ui.md.
+	web.Register(mux, web.New(handler, logger))
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: api.WithLogging(logger, mux)}
 
 	go func() {

@@ -42,6 +42,21 @@ func (h *Handler) ListSubmissions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"submissions": dtos})
 }
 
+// ApproveOutcome is the shared result of approving a pending submission --
+// either published (SkillID/Version/ScanVerdict populated) or auto-rejected
+// (Reason populated) -- returned by ApproveSubmissionCore and used by both
+// the JSON API (ApproveSubmission) and the HTML admin dashboard
+// (internal/web) to render the exact same outcome for the exact same call.
+type ApproveOutcome struct {
+	Published   bool
+	SkillID     string
+	Version     int64
+	ScanVerdict scan.Verdict
+	// Reason is populated when Published is false: either a pipeline
+	// validation error or a summarized "blocked" scan verdict.
+	Reason string
+}
+
 // ApproveSubmission runs the validation pipeline synchronously against the
 // submission's archive and, if it passes, runs the security scan shield
 // (internal/scan) against the same validated files. A "blocked" verdict
@@ -63,43 +78,56 @@ func (h *Handler) ListSubmissions(w http.ResponseWriter, r *http.Request) {
 // reason about (no "approved but not yet published" limbo state to track).
 // See the README.
 func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	ctx := r.Context()
+	outcome, subErr := h.ApproveSubmissionCore(r.Context(), r.PathValue("id"))
+	if subErr != nil {
+		writeError(w, subErr.Status, subErr.Message)
+		return
+	}
+	if !outcome.Published {
+		writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": outcome.Reason})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"outcome":      "published",
+		"skill_id":     outcome.SkillID,
+		"version":      outcome.Version,
+		"scan_verdict": outcome.ScanVerdict,
+	})
+}
 
+// ApproveSubmissionCore is the implementation shared by ApproveSubmission
+// (the JSON API) and the HTML admin dashboard's approve action
+// (internal/web); see ApproveSubmission's doc comment for the full
+// description of what it does and why it runs synchronously.
+func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*ApproveOutcome, *SubmissionError) {
 	sub, err := h.Store.GetSubmission(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "submission not found")
-		return
+		return nil, &SubmissionError{http.StatusNotFound, "submission not found"}
 	}
 	if err != nil {
 		h.Logger.Error("get submission", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not load submission")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "could not load submission"}
 	}
 	if sub.Status != store.StatusPending {
-		writeError(w, http.StatusConflict, fmt.Sprintf("submission is already %s", sub.Status))
-		return
+		return nil, &SubmissionError{http.StatusConflict, fmt.Sprintf("submission is already %s", sub.Status)}
 	}
 
 	result, err := pipeline.ValidateArchive(sub.ArchivePath, sub.SkillID)
 	if err != nil {
-		h.autoReject(w, ctx, id, sub, err.Error())
-		return
+		return h.autoReject(ctx, id, sub, err.Error())
 	}
 
 	files, err := pipeline.ReadFiles(sub.ArchivePath, result.Entries)
 	if err != nil {
 		h.Logger.Error("read validated archive", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not read the validated archive")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "could not read the validated archive"}
 	}
 
 	_, err = h.Store.GetSkill(ctx, sub.SkillID)
 	isUpdate := err == nil
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		h.Logger.Error("check for existing skill", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not check for an existing published skill")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "could not check for an existing published skill"}
 	}
 	trigger := store.ScanTriggerPipeline
 	if isUpdate {
@@ -110,25 +138,21 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	scanRow, err := scan.BuildScanRow(report, store.ScanTargetSubmission, sub.ID, trigger, h.now())
 	if err != nil {
 		h.Logger.Error("build scan row", "error", err)
-		writeError(w, http.StatusInternalServerError, "scan completed but could not be recorded")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
 	}
 	if _, err := h.Store.CreateScan(ctx, scanRow); err != nil {
 		h.Logger.Error("record scan", "error", err)
-		writeError(w, http.StatusInternalServerError, "scan completed but could not be recorded")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
 	}
 
 	if report.Verdict == scan.VerdictBlocked {
-		h.autoReject(w, ctx, id, sub, summarizeBlockedScan(report))
-		return
+		return h.autoReject(ctx, id, sub, summarizeBlockedScan(report))
 	}
 
 	version, err := h.Store.MaxVersion(ctx, sub.SkillID)
 	if err != nil {
 		h.Logger.Error("compute max version", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not determine the next version")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "could not determine the next version"}
 	}
 	version++
 
@@ -143,14 +167,12 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		// rather than auto-rejecting a skill that actually passed the
 		// pipeline and the scan shield.
 		h.Logger.Error("publish to github", "error", err, "skill_id", sub.SkillID)
-		writeError(w, http.StatusBadGateway, "publish to GitHub failed; submission remains pending for retry")
-		return
+		return nil, &SubmissionError{http.StatusBadGateway, "publish to GitHub failed; submission remains pending for retry"}
 	}
 
 	if err := copyFile(sub.ArchivePath, filepath.Join(h.PublishedDir, sub.SkillID+".zip")); err != nil {
 		h.Logger.Error("archive published copy", "error", err)
-		writeError(w, http.StatusInternalServerError, "published to GitHub but could not archive the local download copy")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "published to GitHub but could not archive the local download copy"}
 	}
 
 	skillVersion := store.SkillVersion{
@@ -166,18 +188,15 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	skillVersionID, err := h.Store.CreateSkillVersion(ctx, skillVersion)
 	if err != nil {
 		h.Logger.Error("create skill version", "error", err)
-		writeError(w, http.StatusInternalServerError, "published to GitHub but could not record the new version")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "published to GitHub but could not record the new version"}
 	}
 	if err := h.Store.SetSkillPointer(ctx, sub.SkillID, version, h.now()); err != nil {
 		h.Logger.Error("set skill pointer", "error", err)
-		writeError(w, http.StatusInternalServerError, "published to GitHub but could not update the catalog")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "published to GitHub but could not update the catalog"}
 	}
 	if err := h.Store.DecideSubmission(ctx, id, store.StatusApproved, nil, h.now()); err != nil {
 		h.Logger.Error("record approval", "error", err)
-		writeError(w, http.StatusInternalServerError, "published but could not record the decision")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "published but could not record the decision"}
 	}
 
 	// Attach the same scan result to the new skill version, so it's
@@ -191,25 +210,19 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.Logger.Info("submission published", "id", id, "skill_id", sub.SkillID, "version", version, "scan_verdict", report.Verdict)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"outcome":      "published",
-		"skill_id":     sub.SkillID,
-		"version":      version,
-		"scan_verdict": report.Verdict,
-	})
+	return &ApproveOutcome{Published: true, SkillID: sub.SkillID, Version: version, ScanVerdict: report.Verdict}, nil
 }
 
-// autoReject records a submission as auto-rejected with reason and writes
-// the standard in-band rejection response. Both a pipeline-validation
-// failure and a "blocked" scan verdict funnel through this single path.
-func (h *Handler) autoReject(w http.ResponseWriter, ctx context.Context, id string, sub *store.Submission, reason string) {
+// autoReject records a submission as auto-rejected with reason, returning
+// the shared ApproveOutcome shape. Both a pipeline-validation failure and a
+// "blocked" scan verdict funnel through this single path.
+func (h *Handler) autoReject(ctx context.Context, id string, sub *store.Submission, reason string) (*ApproveOutcome, *SubmissionError) {
 	if decideErr := h.Store.DecideSubmission(ctx, id, store.StatusRejected, &reason, h.now()); decideErr != nil {
 		h.Logger.Error("record auto-rejection", "error", decideErr)
-		writeError(w, http.StatusInternalServerError, "validation failed and rejection could not be recorded")
-		return
+		return nil, &SubmissionError{http.StatusInternalServerError, "validation failed and rejection could not be recorded"}
 	}
 	h.Logger.Info("submission auto-rejected", "id", id, "skill_id", sub.SkillID, "reason", reason)
-	writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": reason})
+	return &ApproveOutcome{Published: false, Reason: reason}, nil
 }
 
 // summarizeBlockedScan builds a concise, human-readable rejection reason
@@ -232,9 +245,6 @@ func summarizeBlockedScan(report scan.Report) string {
 // RejectSubmission rejects a pending submission with an admin-supplied
 // reason. No pipeline run is triggered.
 func (h *Handler) RejectSubmission(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	ctx := r.Context()
-
 	var body struct {
 		Reason string `json:"reason"`
 	}
@@ -242,35 +252,46 @@ func (h *Handler) RejectSubmission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request body must be JSON: {\"reason\": \"...\"}")
 		return
 	}
-	reason := strings.TrimSpace(body.Reason)
-	if reason == "" {
-		writeError(w, http.StatusBadRequest, "reason is required")
+
+	reason, subErr := h.RejectSubmissionCore(r.Context(), r.PathValue("id"), body.Reason)
+	if subErr != nil {
+		writeError(w, subErr.Status, subErr.Message)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": reason})
+}
+
+// RejectSubmissionCore is the implementation shared by RejectSubmission
+// (the JSON API, which reads reason from a JSON body) and the HTML admin
+// dashboard's reject action (internal/web, which reads it from a form
+// field) -- rejects a pending submission with reason and returns it
+// trimmed, or an error if the submission is missing, not pending, or reason
+// is blank.
+func (h *Handler) RejectSubmissionCore(ctx context.Context, id, reason string) (string, *SubmissionError) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "", &SubmissionError{http.StatusBadRequest, "reason is required"}
 	}
 
 	sub, err := h.Store.GetSubmission(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "submission not found")
-		return
+		return "", &SubmissionError{http.StatusNotFound, "submission not found"}
 	}
 	if err != nil {
 		h.Logger.Error("get submission", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not load submission")
-		return
+		return "", &SubmissionError{http.StatusInternalServerError, "could not load submission"}
 	}
 	if sub.Status != store.StatusPending {
-		writeError(w, http.StatusConflict, fmt.Sprintf("submission is already %s", sub.Status))
-		return
+		return "", &SubmissionError{http.StatusConflict, fmt.Sprintf("submission is already %s", sub.Status)}
 	}
 
 	if err := h.Store.DecideSubmission(ctx, id, store.StatusRejected, &reason, h.now()); err != nil {
 		h.Logger.Error("record rejection", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not record the rejection")
-		return
+		return "", &SubmissionError{http.StatusInternalServerError, "could not record the rejection"}
 	}
 
 	h.Logger.Info("submission rejected", "id", id, "skill_id", sub.SkillID, "reason", reason)
-	writeJSON(w, http.StatusOK, map[string]string{"outcome": "rejected", "reason": reason})
+	return reason, nil
 }
 
 func copyFile(srcPath, destPath string) error {

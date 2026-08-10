@@ -24,9 +24,10 @@ open http://localhost:8080/auth/google/login
 ### `GET /auth/google/callback`
 
 No auth. Google redirects here with `code`/`state`. On success, sets the
-session cookie and returns a small confirmation page. `400` on a
-missing/expired/reused `state`; `403` if the email isn't verified or not
-on the appropriate allowlist; `502` if the code exchange fails.
+session cookie and redirects (`302`) to `/` (the HTML UI's home page --
+see [web-ui.md](web-ui.md)). `400` on a missing/expired/reused `state`;
+`403` if the email isn't verified or not on the appropriate allowlist;
+`502` if the code exchange fails.
 
 ### `POST /auth/logout`
 

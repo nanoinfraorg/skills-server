@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>{{.Skill.DisplayName}}</h1>
+<p><code>{{.Skill.SkillID}}</code> &middot; current version v{{.Skill.Version}}</p>
+
+{{if eq .Skill.Status "quarantined"}}
+  <p><mark>This skill's current version has been quarantined by the security scan shield and is not available for download.</mark></p>
+{{else}}
+  <p><a href="/api/v1/skills/{{.Skill.SkillID}}/download" role="button">Download v{{.Skill.Version}}</a></p>
+{{end}}
+
+<p>{{.Skill.Description}}</p>
+<p><small>{{.Skill.Downloads}} download{{if ne .Skill.Downloads 1}}s{{end}} &middot; published {{.Skill.PublishedAt.Format "2006-01-02"}}</small></p>
+
+<h2>Version history</h2>
+<table>
+  <thead><tr><th>Version</th><th>Published</th><th>Status</th></tr></thead>
+  <tbody>
+  {{range .Versions}}
+    <tr>
+      <td>v{{.Version}}</td>
+      <td>{{.PublishedAt.Format "2006-01-02"}}</td>
+      <td>{{.Status}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

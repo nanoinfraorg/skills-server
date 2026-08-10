@@ -88,10 +88,21 @@ CREATE TABLE IF NOT EXISTS sessions (
 	email      TEXT NOT NULL,
 	role       TEXT NOT NULL,
 	created_at TEXT NOT NULL,
-	expires_at TEXT NOT NULL
+	expires_at TEXT NOT NULL,
+	csrf_token TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 `
+
+// sessionsCSRFMigration adds the csrf_token column (see Session.CSRFToken)
+// to a sessions table created by a pre-web-UI version of this schema.
+// schema's own "CREATE TABLE IF NOT EXISTS" only applies to a brand-new
+// table, so an existing database's sessions table needs this ALTER to pick
+// up the column. The error from a second run (column already exists,
+// whether from a fresh database created with the column from the start, or
+// a database this migration already ran against once) is deliberately
+// ignored -- SQLite has no "ADD COLUMN IF NOT EXISTS".
+const sessionsCSRFMigration = `ALTER TABLE sessions ADD COLUMN csrf_token TEXT NOT NULL DEFAULT '';`
 
 // Store wraps the SQLite database used by skills-server.
 type Store struct {
@@ -115,6 +126,10 @@ func Open(dbPath string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if _, err := db.Exec(sessionsCSRFMigration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("apply csrf_token migration: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -168,6 +183,32 @@ func (s *Store) ListSubmissions(ctx context.Context, status string) ([]Submissio
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query submissions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Submission
+	for rows.Next() {
+		sub, err := scanSubmission(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan submission: %w", err)
+		}
+		out = append(out, *sub)
+	}
+	return out, rows.Err()
+}
+
+// ListSubmissionsBySubmitter returns every submission created by submitter
+// (matched case-insensitively, since the submitter field is a free-text
+// field on a token-authenticated submission but always a lowercased,
+// verified email on a session-authenticated one), newest first. Used by the
+// "my submissions" page (internal/web) so a logged-in submitter can see
+// their own submission history and its status.
+func (s *Store) ListSubmissionsBySubmitter(ctx context.Context, submitter string) ([]Submission, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at
+		FROM submissions WHERE LOWER(submitter) = LOWER(?) ORDER BY created_at DESC`, submitter)
+	if err != nil {
+		return nil, fmt.Errorf("list submissions by submitter: %w", err)
 	}
 	defer rows.Close()
 
@@ -409,6 +450,24 @@ func (s *Store) ListActiveSkillDetails(ctx context.Context) ([]SkillDetail, erro
 	return scanSkillDetails(rows)
 }
 
+// ListAllSkillDetails returns every published skill's current version,
+// quarantined or not, newest-created skill_id last. Unlike
+// ListActiveSkillDetails (used by the daily rescan scheduler, which has no
+// reason to rescan something already quarantined), the admin dashboard
+// (internal/web) needs to show every skill so an admin can see which ones
+// are currently quarantined and rescan any of them, quarantined or not.
+func (s *Store) ListAllSkillDetails(ctx context.Context) ([]SkillDetail, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT`+skillDetailColumns+skillDetailFrom+`
+		ORDER BY s.skill_id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all skill details: %w", err)
+	}
+	defer rows.Close()
+	return scanSkillDetails(rows)
+}
+
 // IncrementDownloads bumps a published skill's aggregate download counter
 // by one, regardless of which version is current.
 func (s *Store) IncrementDownloads(ctx context.Context, skillID string) error {
@@ -466,9 +525,9 @@ func (s *Store) GetLatestScan(ctx context.Context, targetType ScanTargetType, ta
 // CreateSession inserts a new authenticated-session row.
 func (s *Store) CreateSession(ctx context.Context, sess Session) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, email, role, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		sess.ID, sess.Email, string(sess.Role), formatTime(sess.CreatedAt), formatTime(sess.ExpiresAt),
+		INSERT INTO sessions (id, email, role, created_at, expires_at, csrf_token)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.Email, string(sess.Role), formatTime(sess.CreatedAt), formatTime(sess.ExpiresAt), sess.CSRFToken,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -482,10 +541,10 @@ func (s *Store) CreateSession(ctx context.Context, sess Session) error {
 // v1 since there's no separate cleanup job (see Session's doc comment).
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, email, role, created_at, expires_at FROM sessions WHERE id = ?`, id)
+		SELECT id, email, role, created_at, expires_at, csrf_token FROM sessions WHERE id = ?`, id)
 	var sess Session
 	var role, createdAt, expiresAt string
-	if err := row.Scan(&sess.ID, &sess.Email, &role, &createdAt, &expiresAt); err != nil {
+	if err := row.Scan(&sess.ID, &sess.Email, &role, &createdAt, &expiresAt, &sess.CSRFToken); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

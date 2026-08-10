@@ -1,8 +1,6 @@
 package api
 
 import (
-	"fmt"
-	"html"
 	"net/http"
 	"strings"
 	"time"
@@ -86,6 +84,15 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create a session")
 		return
 	}
+	// A fresh CSRF token per session (see store.Session.CSRFToken and
+	// internal/web's CSRF doc comment) -- generated here, alongside the
+	// session id, from the same crypto/rand source.
+	csrfToken, err := auth.RandomToken(32)
+	if err != nil {
+		h.Logger.Error("generate csrf token", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not create a session")
+		return
+	}
 	// Deliberately time.Now() rather than h.now(): session expiry is
 	// compared against real wall-clock time in store.GetSession, so the
 	// session's own timestamps must come from the same clock, not the
@@ -99,6 +106,7 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		Role:      store.SessionRole(role),
 		CreatedAt: now,
 		ExpiresAt: now.Add(h.SessionTTL),
+		CSRFToken: csrfToken,
 	}
 	if err := h.Store.CreateSession(ctx, sess); err != nil {
 		h.Logger.Error("create session", "error", err)
@@ -123,10 +131,11 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	h.Logger.Info("google sign-in", "email", sess.Email, "role", sess.Role)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "<html><body>Logged in as %s (role: %s)</body></html>",
-		html.EscapeString(sess.Email), html.EscapeString(string(sess.Role)))
+	// Redirect to the home page rather than returning a bare confirmation
+	// string: the HTML UI (internal/web) has its own nav/welcome there, so
+	// landing on it after login integrates with the rest of the UI instead
+	// of dead-ending on a standalone page.
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // Logout deletes the session named by the request's session cookie (if

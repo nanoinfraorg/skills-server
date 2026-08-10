@@ -91,6 +91,85 @@ func TestGetSubmissionNotFound(t *testing.T) {
 	}
 }
 
+func TestListSubmissionsBySubmitter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mustCreateSubmission(t, s, "sub-1", "alice-skill", "alice@example.com")
+	mustCreateSubmission(t, s, "sub-2", "alice-skill-2", "Alice@Example.com") // same person, different casing
+	mustCreateSubmission(t, s, "sub-3", "bob-skill", "bob@example.com")
+
+	got, err := s.ListSubmissionsBySubmitter(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatalf("list submissions by submitter: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 submissions for alice (case-insensitive), got %+v", got)
+	}
+	for _, sub := range got {
+		if sub.SkillID != "alice-skill" && sub.SkillID != "alice-skill-2" {
+			t.Errorf("unexpected submission in alice's list: %+v", sub)
+		}
+	}
+
+	none, err := s.ListSubmissionsBySubmitter(ctx, "nobody@example.com")
+	if err != nil {
+		t.Fatalf("list submissions for unknown submitter: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("expected no submissions for an unknown submitter, got %+v", none)
+	}
+}
+
+// mustCreateSubmission is a minimal test helper for seeding a pending
+// submission row when the test only cares about id/skill_id/submitter.
+func mustCreateSubmission(t *testing.T, s *Store, id, skillID, submitter string) {
+	t.Helper()
+	err := s.CreateSubmission(context.Background(), Submission{
+		ID:          id,
+		SkillID:     skillID,
+		DisplayName: "Display " + skillID,
+		Submitter:   submitter,
+		Status:      StatusPending,
+		ArchivePath: "/tmp/" + id + ".zip",
+		CreatedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create submission %s: %v", id, err)
+	}
+}
+
+func TestListAllSkillDetailsIncludesQuarantined(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedSkill(t, s, "clean-skill", "Clean", "a normal skill", 0)
+	seedSkill(t, s, "quarantined-skill", "Quarantined", "a blocked skill", 0)
+
+	if err := s.SetSkillVersionStatus(ctx, "quarantined-skill", 1, SkillVersionQuarantined); err != nil {
+		t.Fatalf("quarantine: %v", err)
+	}
+
+	all, err := s.ListAllSkillDetails(ctx)
+	if err != nil {
+		t.Fatalf("list all skill details: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 skills (quarantined included), got %+v", all)
+	}
+	var sawQuarantined bool
+	for _, sd := range all {
+		if sd.SkillID == "quarantined-skill" {
+			sawQuarantined = true
+			if sd.Status != SkillVersionQuarantined {
+				t.Errorf("quarantined-skill status = %s, want quarantined", sd.Status)
+			}
+		}
+	}
+	if !sawQuarantined {
+		t.Errorf("expected ListAllSkillDetails to include the quarantined skill, got %+v", all)
+	}
+}
+
 // publishVersion is a test helper that drives CreateSkillVersion +
 // SetSkillPointer together, mirroring what the approve handler does on a
 // successful publish.

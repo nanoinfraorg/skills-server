@@ -1,0 +1,21 @@
+{{define "content"}}
+{{if .User}}
+  <h1>Welcome, {{.User.Email}}</h1>
+  <p>You're signed in as <strong>{{.User.Role}}</strong>.</p>
+  <ul>
+    <li><a href="/skills">Browse skills</a></li>
+    <li><a href="/submit">Submit a skill</a></li>
+    <li><a href="/my/submissions">My submissions</a></li>
+    {{if .User.IsAdmin}}<li><a href="/admin">Admin dashboard</a></li>{{end}}
+  </ul>
+{{else}}
+  <h1>skills-server</h1>
+  <p>
+    A self-hosted Agent Skills marketplace: browse published skills, submit
+    your own, and track their review status. Signing in with Google is also
+    how you submit a skill for the first time -- there's no separate sign-up.
+  </p>
+  <p><a href="/auth/google/login" role="button">Sign in with Google</a></p>
+  <p><a href="/skills">Or just browse the public directory</a>, no sign-in required.</p>
+{{end}}
+{{end}}

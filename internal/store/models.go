@@ -128,6 +128,16 @@ type Session struct {
 	Role      SessionRole
 	CreatedAt time.Time
 	ExpiresAt time.Time
+	// CSRFToken is a per-session, cryptographically random value generated
+	// once at login (alongside the session id) and used by internal/web to
+	// protect every state-changing HTML form: each form embeds it as a
+	// hidden field, and the handler rejects the POST unless the submitted
+	// value matches this one exactly. It is never sent anywhere except
+	// inside a same-origin-rendered HTML page, so a cross-site form (which
+	// can forge the session cookie's presence via the browser, but cannot
+	// read this value) cannot produce a request that passes validation. See
+	// internal/web's CSRF doc comment for the full rationale.
+	CSRFToken string
 }
 
 // ScanTargetType identifies what kind of thing a scan ran against.

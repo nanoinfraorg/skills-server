@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,31 @@ import (
 // (pipeline.MaxArchiveBytes) plus generous slack for multipart framing and
 // form fields.
 var maxUploadBytes = pipeline.MaxArchiveBytes + 1<<20
+
+// SubmissionError is a safe, user-facing HTTP status + message describing
+// why CreateSubmissionCore (or one of the other *Core functions in this
+// package) rejected a request. It is the shared error shape both the JSON
+// API (which writes it via writeError) and the HTML UI (internal/web,
+// which renders it inline on the form) report to the caller, so both
+// surfaces show the exact same validation text for the exact same failure.
+type SubmissionError struct {
+	Status  int
+	Message string
+}
+
+func (e *SubmissionError) Error() string { return e.Message }
+
+// SubmissionInput is the shared, transport-agnostic input for creating a
+// submission: both the JSON API's multipart POST (CreateSubmission) and the
+// HTML submit form (internal/web) parse a multipart request down to this
+// same shape and hand it to CreateSubmissionCore, so the actual
+// validate-then-store logic is never duplicated between the two.
+type SubmissionInput struct {
+	SkillID     string
+	DisplayName string
+	Submitter   string
+	Archive     io.Reader
+}
 
 // CreateSubmission accepts a new skill submission: a multipart form with a
 // zip archive plus skill_id / display_name / submitter fields. The archive
@@ -48,19 +74,6 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 		submitter = email
 	}
 
-	if !pipeline.ValidSkillID(skillID) {
-		writeError(w, http.StatusBadRequest, "invalid skill_id: must be lowercase letters, digits, and hyphens, max 64 chars")
-		return
-	}
-	if displayName == "" {
-		writeError(w, http.StatusBadRequest, "display_name is required")
-		return
-	}
-	if submitter == "" {
-		writeError(w, http.StatusBadRequest, "submitter is required")
-		return
-	}
-
 	file, _, err := r.FormFile("archive")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "archive file field is required (multipart field name: archive)")
@@ -68,37 +81,64 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	id := uuid.NewString()
-	archivePath := filepath.Join(h.SubmissionsDir, id+".zip")
-	if err := saveUpload(archivePath, file); err != nil {
-		h.Logger.Error("save submission archive", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not store the uploaded archive")
-		return
-	}
-
-	if _, err := pipeline.ValidateArchive(archivePath, skillID); err != nil {
-		_ = os.Remove(archivePath)
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-
-	sub := store.Submission{
-		ID:          id,
+	id, subErr := h.CreateSubmissionCore(r.Context(), SubmissionInput{
 		SkillID:     skillID,
 		DisplayName: displayName,
 		Submitter:   submitter,
-		Status:      store.StatusPending,
-		ArchivePath: archivePath,
-		CreatedAt:   h.now(),
-	}
-	if err := h.Store.CreateSubmission(r.Context(), sub); err != nil {
-		_ = os.Remove(archivePath)
-		h.Logger.Error("create submission", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not record the submission")
+		Archive:     file,
+	})
+	if subErr != nil {
+		writeError(w, subErr.Status, subErr.Message)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "status": string(store.StatusPending)})
+}
+
+// CreateSubmissionCore validates in and, if it passes, stores the uploaded
+// archive and records a new pending submission row. It is the single
+// implementation shared by CreateSubmission (the JSON API) and the HTML
+// submit form (internal/web) -- both parse their respective multipart
+// request down to a SubmissionInput and call this.
+func (h *Handler) CreateSubmissionCore(ctx context.Context, in SubmissionInput) (string, *SubmissionError) {
+	if !pipeline.ValidSkillID(in.SkillID) {
+		return "", &SubmissionError{http.StatusBadRequest, "invalid skill_id: must be lowercase letters, digits, and hyphens, max 64 chars"}
+	}
+	if in.DisplayName == "" {
+		return "", &SubmissionError{http.StatusBadRequest, "display_name is required"}
+	}
+	if in.Submitter == "" {
+		return "", &SubmissionError{http.StatusBadRequest, "submitter is required"}
+	}
+
+	id := uuid.NewString()
+	archivePath := filepath.Join(h.SubmissionsDir, id+".zip")
+	if err := saveUpload(archivePath, in.Archive); err != nil {
+		h.Logger.Error("save submission archive", "error", err)
+		return "", &SubmissionError{http.StatusInternalServerError, "could not store the uploaded archive"}
+	}
+
+	if _, err := pipeline.ValidateArchive(archivePath, in.SkillID); err != nil {
+		_ = os.Remove(archivePath)
+		return "", &SubmissionError{http.StatusUnprocessableEntity, err.Error()}
+	}
+
+	sub := store.Submission{
+		ID:          id,
+		SkillID:     in.SkillID,
+		DisplayName: in.DisplayName,
+		Submitter:   in.Submitter,
+		Status:      store.StatusPending,
+		ArchivePath: archivePath,
+		CreatedAt:   h.now(),
+	}
+	if err := h.Store.CreateSubmission(ctx, sub); err != nil {
+		_ = os.Remove(archivePath)
+		h.Logger.Error("create submission", "error", err)
+		return "", &SubmissionError{http.StatusInternalServerError, "could not record the submission"}
+	}
+
+	return id, nil
 }
 
 func saveUpload(destPath string, src io.Reader) error {
