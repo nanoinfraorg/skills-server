@@ -21,7 +21,7 @@ validation, publishing, scanning, or persistence.
 | `GET /` | none | Home: "Sign in with Google" if signed out; a welcome + nav links if signed in. |
 | `GET /skills` | none | Public directory: `?q=...` searches (same as `GET /api/v1/search`); no query shows trending (same as `GET /api/v1/trending`). |
 | `GET /skills/{id}` | none | Detail + full version history (same as `GET /api/v1/skills/{id}` + `.../versions`), plus the current version's actual `SKILL.md` content and a flat listing of every file in its archive (read from the local `PublishedDir/<id>.zip` copy). A quarantined current version is shown, clearly marked, not hidden. A logged-in session sees an "Edit / submit new version" link to `/submit?skill_id=<id>`. |
-| `GET /submit` | submitter or admin session | Submission form: `skill_id`, `display_name`, and either a `.zip` file *or* a `SKILL.md` textarea (see below). There is no submitter field -- it's always the session's verified email. An optional `?skill_id=<id>` pre-fills the form with that skill's current display name and `SKILL.md` content and locks the `skill_id` field (readonly), for the "Edit / submit new version" link from the detail page. |
+| `GET /submit` | submitter or admin session | Submission form: `skill_id`, `display_name`, two optional "Skill Card" fields (`owner`, `risks` -- see below), and either a `.zip` file *or* a `SKILL.md` textarea (see below). There is no submitter field -- it's always the session's verified email. An optional `?skill_id=<id>` pre-fills the form with that skill's current display name, `owner`/`risks`, and `SKILL.md` content, and locks the `skill_id` field (readonly), for the "Edit / submit new version" link from the detail page. |
 | `POST /submit` | submitter or admin session, CSRF | Validates and creates the submission via `CreateSubmissionCore`. Redirects to `/my/submissions` on success; re-renders the form with the same inline error text the JSON API would return on failure. |
 | `GET /my/submissions` | any session | The session's own submissions and their status (`store.Store.ListSubmissionsBySubmitter`, added for this page). |
 | `GET /admin` | admin session | Pending submissions (with latest scan verdict, if any) and every published skill (with quarantine status), each with a CSRF-protected form action. |
@@ -57,6 +57,53 @@ content for purely cosmetic benefit (see
 [design-choices.md](design-choices.md)). If the archive is missing or
 unreadable, the page still renders (metadata only) with a fallback message;
 this is logged as a warning, since every published skill should have one.
+
+## Skill Card
+
+The detail page also shows a small "Skill Card" section, between the
+description/downloads line and the Security Audits panel below. It is a
+deliberately narrow subset of NVIDIA's "Skill Card" governance template --
+most of that template's sections already have an equivalent elsewhere in
+this project (Description is the existing description field, References is
+the Security Audits panel, Skill output is implicit in `SKILL.md`, Version
+is already shown) or were judged overkill for a marketplace with a handful
+of skills (deployment geography, formal license/terms metadata, ethical
+considerations, signing identifiers). Only three lines are shown:
+
+- **Owner** -- an optional, submitter-provided free-text field (`owner` on
+  `store.Submission`/`store.SkillVersion`) naming who's accountable for the
+  skill (a name, email, or team). Rendered only when set; no placeholder is
+  shown otherwise, matching this page's existing "don't render a
+  placeholder for absent optional data" convention (see the VirusTotal audit
+  row below).
+- **Risks and mitigations** -- an optional, submitter-provided free-text
+  field (`risks`) describing what could go wrong with the skill and how
+  that's mitigated (e.g. "runs arbitrary shell commands -- review scripts/
+  before granting broad permissions"). Rendered as plain escaped text, same
+  as `SKILL.md` elsewhere on this page -- no Markdown rendering. Also
+  rendered only when set.
+- **License or terms** -- always shown, but it is a *static* sentence, not a
+  stored field: "check the skill's own repository for license details",
+  linking to the skill's path in the published GitHub repository
+  (`https://github.com/<repo>/tree/main/<github_path>`, built from
+  `api.Handler.GitHubRepo` and the version's `GitHubPath`) when a repo is
+  configured. This server has no license-metadata system and deliberately
+  doesn't invent one: `SKILL.md` is a portable, cross-project format this
+  server doesn't own, so requiring or trusting a submitter-typed license
+  string would add schema surface for data nobody actually verifies. Instead
+  the notice points visitors at the skill's real source.
+
+Both `owner` and `risks` are optional everywhere -- omitting them is not an
+error, and a submission from before this feature existed simply has both as
+empty strings (see the idempotent `ALTER TABLE` migration in
+`internal/store/store.go` for how an already-running deployment's database
+picks up the two new columns without losing data). They are
+submitter-provided at submission time (`POST /submit`'s `owner`/`risks`
+form fields, pre-filled from the current version on the edit-prefill flow
+just like `display_name`/`skill_md` already are) and carried forward
+verbatim onto the published `skill_versions` row at approval time
+(`ApproveSubmissionCore`) -- never derived from `SKILL.md` frontmatter,
+unlike `Description`.
 
 ## Security Audits panel
 

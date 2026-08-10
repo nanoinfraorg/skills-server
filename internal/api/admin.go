@@ -187,6 +187,8 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 		GitHubPath:   sub.SkillID + "/",
 		PublishedAt:  h.now(),
 		Status:       store.SkillVersionPublished,
+		Owner:        sub.Owner,
+		Risks:        sub.Risks,
 	}
 	skillVersionID, err := h.Store.CreateSkillVersion(ctx, skillVersion)
 	if err != nil {

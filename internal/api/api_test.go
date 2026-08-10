@@ -1098,3 +1098,144 @@ func TestApproveSubmission_VirusTotalUploadFailureCreatesNoRowAndDoesNotFailAppr
 		t.Errorf("expected no virustotal scan row on upload failure, got err=%v", err)
 	}
 }
+
+// TestCreateSubmission_OwnerAndRisksAreOptional confirms a submission with
+// neither the owner nor risks form field still succeeds, and is stored with
+// both as empty strings -- "optional" must mean no validation ever requires
+// them, not just that the zero value happens to work.
+func TestCreateSubmission_OwnerAndRisksAreOptional(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	archive := buildZip(t, map[string]string{"SKILL.md": testValidSkillMD})
+	req := submissionRequest(t, "submitter-secret", map[string]string{
+		"skill_id":     "my-skill",
+		"display_name": "My Skill",
+		"submitter":    "alice",
+	}, archive)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON[map[string]string](t, rec.Body)
+
+	sub, err := h.Store.GetSubmission(context.Background(), resp["id"])
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	if sub.Owner != "" || sub.Risks != "" {
+		t.Errorf("expected empty owner/risks when omitted, got owner=%q risks=%q", sub.Owner, sub.Risks)
+	}
+}
+
+// TestCreateSubmission_OwnerAndRisksPersisted confirms the owner/risks form
+// fields, when provided, are trimmed and stored on the submission row.
+func TestCreateSubmission_OwnerAndRisksPersisted(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	archive := buildZip(t, map[string]string{"SKILL.md": testValidSkillMD})
+	req := submissionRequest(t, "submitter-secret", map[string]string{
+		"skill_id":     "my-skill",
+		"display_name": "My Skill",
+		"submitter":    "alice",
+		"owner":        "  Platform Team  ",
+		"risks":        "  Runs shell commands; review scripts/ before granting broad permissions.  ",
+	}, archive)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON[map[string]string](t, rec.Body)
+
+	sub, err := h.Store.GetSubmission(context.Background(), resp["id"])
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	if sub.Owner != "Platform Team" {
+		t.Errorf("owner = %q, want trimmed \"Platform Team\"", sub.Owner)
+	}
+	if sub.Risks != "Runs shell commands; review scripts/ before granting broad permissions." {
+		t.Errorf("risks = %q, want trimmed risks text", sub.Risks)
+	}
+
+	// The JSON API's own submission listing must expose the same fields to
+	// a programmatic consumer.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, adminRequest(http.MethodGet, "/api/v1/admin/submissions", "admin-secret", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list submissions status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	listResp := decodeJSON[map[string]any](t, rec.Body)
+	submissions, _ := listResp["submissions"].([]any)
+	if len(submissions) != 1 {
+		t.Fatalf("expected 1 submission in listing, got %+v", listResp)
+	}
+	first := submissions[0].(map[string]any)
+	if first["owner"] != "Platform Team" {
+		t.Errorf("listed submission owner = %v, want Platform Team", first["owner"])
+	}
+	if first["risks"] != "Runs shell commands; review scripts/ before granting broad permissions." {
+		t.Errorf("listed submission risks = %v", first["risks"])
+	}
+}
+
+// TestApproveSubmission_CarriesOwnerAndRisksForwardToSkillVersion confirms
+// ApproveSubmissionCore copies a submission's Owner/Risks onto the new
+// skill_versions row it creates -- the exact same submitter-provided,
+// carry-forward pattern DisplayName already uses (these are never derived
+// from SKILL.md frontmatter, which this server doesn't own). It also
+// confirms the JSON API's version-detail endpoint exposes both fields.
+func TestApproveSubmission_CarriesOwnerAndRisksForwardToSkillVersion(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	archive := buildZip(t, map[string]string{"SKILL.md": testValidSkillMD})
+	req := submissionRequest(t, "submitter-secret", map[string]string{
+		"skill_id":     "my-skill",
+		"display_name": "My Skill",
+		"submitter":    "alice",
+		"owner":        "Security Guild",
+		"risks":        "Could exfiltrate data if misconfigured.",
+	}, archive)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed submission status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	id := decodeJSON[map[string]string](t, rec.Body)["id"]
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, adminRequest(http.MethodPost, "/api/v1/admin/submissions/"+id+"/approve", "admin-secret", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	versions, err := h.Store.ListSkillVersions(context.Background(), "my-skill")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
+	}
+	if versions[0].Owner != "Security Guild" {
+		t.Errorf("skill version owner = %q, want Security Guild", versions[0].Owner)
+	}
+	if versions[0].Risks != "Could exfiltrate data if misconfigured." {
+		t.Errorf("skill version risks = %q, want the submitted risks text", versions[0].Risks)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/skills/my-skill/versions/1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get version status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	detail := decodeJSON[map[string]any](t, rec.Body)
+	if detail["owner"] != "Security Guild" {
+		t.Errorf("version detail owner = %v, want Security Guild", detail["owner"])
+	}
+	if detail["risks"] != "Could exfiltrate data if misconfigured." {
+		t.Errorf("version detail risks = %v, want the submitted risks text", detail["risks"])
+	}
+}

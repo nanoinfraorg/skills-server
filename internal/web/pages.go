@@ -109,6 +109,14 @@ type skillDetailPageData struct {
 	// this version (see virusTotalAudit's doc comment for exactly when
 	// that second entry does or doesn't appear).
 	SecurityAudits []securityAudit
+	// RepoLink is a link to this skill's own path in the published GitHub
+	// repository, shown as part of the "Skill Card" section's static
+	// license/terms notice -- this server has no license-metadata system of
+	// its own, so it points visitors at the skill's own repository/SKILL.md
+	// instead of collecting an unverified license string. Empty if
+	// h.API.GitHubRepo isn't configured, in which case the template falls
+	// back to a non-linked version of the same sentence.
+	RepoLink string
 }
 
 // securityAudit is one named security check's result, for the detail
@@ -264,7 +272,20 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		Content:        content,
 		Files:          files,
 		SecurityAudits: audits,
+		RepoLink:       repoLink(h.API.GitHubRepo, skill.GitHubPath),
 	})
+}
+
+// repoLink builds a link to a skill's own path in the published GitHub
+// repository (ghRepo is "owner/repo", e.g. "nanoinfraorg/skills";
+// githubPath is the skill's path within it, e.g. "my-skill/" -- see
+// ApproveSubmissionCore, which sets it to skill_id+"/"). Returns "" if
+// ghRepo isn't configured, since there's nothing to link to.
+func repoLink(ghRepo, githubPath string) string {
+	if ghRepo == "" {
+		return ""
+	}
+	return "https://github.com/" + ghRepo + "/tree/main/" + strings.TrimSuffix(githubPath, "/")
 }
 
 // skillMDAndFiles reads a published skill's locally-archived zip copy
@@ -323,6 +344,14 @@ type submitPageData struct {
 	// fresh submission where the field is freely editable.
 	SkillIDLocked bool
 	DisplayName   string
+	// Owner and Risks are the two optional "Skill Card" free-text fields
+	// (see submissionDTO/skillVersionDetailDTO's doc comments in
+	// internal/api/json.go for the full rationale): pre-filled the same way
+	// as DisplayName -- empty for a fresh submission, the current version's
+	// values when editing, or whatever the visitor last typed if a previous
+	// POST to this same page failed validation.
+	Owner string
+	Risks string
 	// SkillMD is the textarea's pre-filled content: empty for a fresh
 	// submission, or the current version's actual SKILL.md text when
 	// editing (see SubmitForm), or whatever the visitor last typed if a
@@ -340,10 +369,11 @@ type submitPageData struct {
 //
 // An optional ?skill_id=<id> query parameter is the edit entry point linked
 // from the skill detail page: when it names an existing published skill,
-// the form is pre-filled with that skill's display name and its current
-// version's actual SKILL.md content (via skillMDAndFiles), and the
-// skill_id field is locked (SkillIDLocked) so the edit can't accidentally
-// turn into a new skill under a different id. There is no separate
+// the form is pre-filled with that skill's display name, its current
+// version's actual SKILL.md content (via skillMDAndFiles), and its current
+// version's Owner/Risks values, and the skill_id field is locked
+// (SkillIDLocked) so the edit can't accidentally turn into a new skill
+// under a different id. There is no separate
 // "edit" concept beyond this pre-fill -- the resulting POST is a normal
 // submission for an existing skill_id, handled identically to any other
 // (see SubmitCreate). An id that doesn't resolve to a real skill falls
@@ -359,6 +389,8 @@ func (h *Handler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 		if skill, err := h.API.Store.GetSkillDetail(r.Context(), editID); err == nil {
 			data.SkillID = editID
 			data.DisplayName = skill.DisplayName
+			data.Owner = skill.Owner
+			data.Risks = skill.Risks
 			data.SkillIDLocked = true
 			if content, _, cerr := h.skillMDAndFiles(editID); cerr == nil {
 				data.SkillMD = content
@@ -430,6 +462,8 @@ func (h *Handler) SubmitCreate(w http.ResponseWriter, r *http.Request) {
 
 	skillID := strings.TrimSpace(r.FormValue("skill_id"))
 	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	risks := strings.TrimSpace(r.FormValue("risks"))
 	skillMD := r.FormValue("skill_md")
 
 	if !validCSRF(r, sess) {
@@ -446,7 +480,7 @@ func (h *Handler) SubmitCreate(w http.ResponseWriter, r *http.Request) {
 		if zerr != nil {
 			h.Logger.Error("build in-memory zip from pasted SKILL.md", "error", zerr)
 			h.renderSubmitForm(w, http.StatusInternalServerError, sess, submitPageData{
-				SkillID: skillID, DisplayName: displayName, SkillMD: skillMD,
+				SkillID: skillID, DisplayName: displayName, Owner: owner, Risks: risks, SkillMD: skillMD,
 				Error: "could not process the pasted SKILL.md content",
 			})
 			return
@@ -454,7 +488,7 @@ func (h *Handler) SubmitCreate(w http.ResponseWriter, r *http.Request) {
 		archive = bytes.NewReader(zipBytes)
 	} else {
 		h.renderSubmitForm(w, http.StatusBadRequest, sess, submitPageData{
-			SkillID: skillID, DisplayName: displayName,
+			SkillID: skillID, DisplayName: displayName, Owner: owner, Risks: risks,
 			Error: "either a .zip archive or SKILL.md text is required",
 		})
 		return
@@ -464,11 +498,13 @@ func (h *Handler) SubmitCreate(w http.ResponseWriter, r *http.Request) {
 		SkillID:     skillID,
 		DisplayName: displayName,
 		Submitter:   sess.Email,
+		Owner:       owner,
+		Risks:       risks,
 		Archive:     archive,
 	})
 	if subErr != nil {
 		h.renderSubmitForm(w, subErr.Status, sess, submitPageData{
-			SkillID: skillID, DisplayName: displayName, SkillMD: skillMD, Error: subErr.Message,
+			SkillID: skillID, DisplayName: displayName, Owner: owner, Risks: risks, SkillMD: skillMD, Error: subErr.Message,
 		})
 		return
 	}

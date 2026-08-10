@@ -15,6 +15,13 @@
 <p>{{.Skill.Description}}</p>
 <p><small>{{.Skill.Downloads}} download{{if ne .Skill.Downloads 1}}s{{end}} &middot; published {{.Skill.PublishedAt.Format "2006-01-02"}}</small></p>
 
+<h2>Skill Card</h2>
+<ul>
+  {{if .Skill.Owner}}<li><strong>Owner:</strong> {{.Skill.Owner}}</li>{{end}}
+  {{if .Skill.Risks}}<li><strong>Risks and mitigations:</strong> {{.Skill.Risks}}</li>{{end}}
+  <li><strong>License or terms:</strong> check the skill's own repository for license details{{if .RepoLink}} (<a href="{{.RepoLink}}">{{.Skill.SkillID}} on GitHub</a>){{end}}.</li>
+</ul>
+
 <h2>Security Audits</h2>
 {{if .SecurityAudits}}
   <ul>

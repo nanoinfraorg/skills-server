@@ -19,6 +19,16 @@
     <input type="text" id="display_name" name="display_name" value="{{.DisplayName}}" required>
   </label>
 
+  <label for="owner">Owner (optional)
+    <input type="text" id="owner" name="owner" value="{{.Owner}}">
+  </label>
+  <small>Who's accountable for this skill? A name, email, or team.</small>
+
+  <label for="risks">Risks and mitigations (optional)
+    <textarea id="risks" name="risks" rows="4">{{.Risks}}</textarea>
+  </label>
+  <small>What could go wrong, and how is that risk reduced? E.g. &quot;runs arbitrary shell commands -- review scripts/ before granting broad permissions.&quot;</small>
+
   <label for="archive">Archive (.zip, must contain a root SKILL.md)
     <input type="file" id="archive" name="archive" accept=".zip">
   </label>
