@@ -18,6 +18,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/api"
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
+	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
 
@@ -293,6 +294,72 @@ func TestCatchAll_UnknownPathRendersStyled404(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("healthz status = %d, want 200 (api.NewMux's route, not the catch-all)", rec.Code)
+	}
+}
+
+func TestSkillDetail_ShowsNanoinfraScannerAudit(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	svID, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "audited", Version: 1, SubmissionID: "seed-audited", DisplayName: "Audited",
+		Description: "has a scan", GitHubPath: "audited/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	})
+	if err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "audited", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateScan(ctx, store.Scan{
+		TargetType: store.ScanTargetSkillVersion,
+		TargetID:   api.ScanIDString(svID),
+		Trigger:    store.ScanTriggerPipeline,
+		Verdict:    store.ScanVerdict(scan.VerdictFlagged),
+		TextOnlyOK: true,
+		ScannedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("seed scan: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/audited", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "NanoInfra Scanner") {
+		t.Errorf("expected the NanoInfra Scanner audit to be listed, got: %s", body)
+	}
+	if !strings.Contains(body, "WARN") {
+		t.Errorf("expected a WARN badge for a flagged verdict, got: %s", body)
+	}
+}
+
+func TestSkillDetail_NoScanShowsPendingAudit(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "unaudited", Version: 1, SubmissionID: "seed-unaudited", DisplayName: "Unaudited",
+		Description: "no scan yet", GitHubPath: "unaudited/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "unaudited", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/unaudited", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "NanoInfra Scanner") || !strings.Contains(body, "PENDING") {
+		t.Errorf("expected a pending NanoInfra Scanner audit, got: %s", body)
 	}
 }
 

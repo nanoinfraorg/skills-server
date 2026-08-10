@@ -112,7 +112,7 @@ func (h *Handler) GetSkillVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var scanDTOPtr *scanDTO
-	latestScan, err := h.Store.GetLatestScan(ctx, store.ScanTargetSkillVersion, scanIDString(sv.ID))
+	latestScan, err := h.Store.GetLatestScan(ctx, store.ScanTargetSkillVersion, ScanIDString(sv.ID))
 	if err == nil {
 		dto := toScanDTO(*latestScan)
 		scanDTOPtr = &dto

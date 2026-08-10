@@ -344,7 +344,7 @@ func TestApproveSubmission_HappyPathPublishes(t *testing.T) {
 	if err != nil || len(versions) != 1 {
 		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
 	}
-	versionScan, err := h.Store.GetLatestScan(context.Background(), store.ScanTargetSkillVersion, scanIDString(versions[0].ID))
+	versionScan, err := h.Store.GetLatestScan(context.Background(), store.ScanTargetSkillVersion, ScanIDString(versions[0].ID))
 	if err != nil {
 		t.Fatalf("get skill version scan: %v", err)
 	}

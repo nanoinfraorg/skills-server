@@ -123,7 +123,7 @@ func (h *Handler) RescanSkillCore(ctx context.Context, id string) (scanDTO, bool
 		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "could not re-validate the published archive: " + err.Error()}
 	}
 
-	dto, err := h.recordScan(ctx, report, store.ScanTargetSkillVersion, scanIDString(sv.ID), store.ScanTriggerManual)
+	dto, err := h.recordScan(ctx, report, store.ScanTargetSkillVersion, ScanIDString(sv.ID), store.ScanTriggerManual)
 	if err != nil {
 		h.Logger.Error("record rescan", "error", err)
 		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
