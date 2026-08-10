@@ -28,6 +28,13 @@ import (
 // requests to finish on SIGINT/SIGTERM before giving up.
 const shutdownTimeout = 10 * time.Second
 
+// version is overridden at build time via
+// -ldflags "-X main.version=<git describe or tag>" (see Dockerfile and
+// .github/workflows/ci.yml), so a running container's logs identify exactly
+// which build produced it. "dev" is what you get from a plain `go run`/`go
+// build` with no ldflags.
+var version = "dev"
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
@@ -112,7 +119,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("skills-server starting", "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval, "public_base_url", cfg.PublicBaseURL)
+	logger.Info("skills-server starting", "version", version, "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval, "public_base_url", cfg.PublicBaseURL)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", "error", err)

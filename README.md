@@ -566,3 +566,65 @@ go vet ./...
 gofmt -l .      # should print nothing
 go test ./... -count=1
 ```
+
+## Docker
+
+The provided `Dockerfile` is a multi-stage build: `golang:1.26-alpine` compiles
+a fully static binary (`CGO_ENABLED=0` -- `internal/store`'s SQLite driver,
+`modernc.org/sqlite`, is pure Go, so no C toolchain or libsqlite3 is needed
+anywhere), and the final image is `gcr.io/distroless/static-debian12:nonroot`
+-- no shell, no package manager, runs as a non-root user, ca-certificates
+already present (needed for the outbound HTTPS calls this server makes: the
+GitHub Contents API, Google's OAuth/OIDC endpoints, and the optional LLM
+endpoint). Deliberately minimal, for a service whose whole purpose is acting
+as a security shield against untrusted, submitted content.
+
+```bash
+docker build -t skills-server .
+docker run --rm -p 8080:8080 \
+  --env-file .env \
+  -v skills-server-data:/data \
+  skills-server
+```
+
+`/data` (the SQLite database, pending-submission archives, and published-skill
+archives) is the only state that needs to survive a restart -- mount a named
+volume or bind mount there in any real deployment. There's no Docker
+`HEALTHCHECK` in the image (distroless has no `curl`/`wget` to run one from
+inside the container); point your orchestrator's own health check (Docker
+Compose, a Kubernetes liveness/readiness probe, ...) at `GET /healthz` over
+HTTP instead.
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push to `main`, every `v*.*.*` tag,
+and every pull request targeting `main`:
+
+1. **`test`** -- `go build`, `go vet`, a `gofmt -l` format check, and
+   `go test ./... -race`.
+2. **`docker`** (`needs: test`) -- builds the image for `linux/amd64` and
+   `linux/arm64`. On a pull request this only *builds* (validating the
+   Dockerfile compiles), nothing is pushed. On a push to `main` or a version
+   tag, it also pushes to `ghcr.io/nanoinfraorg/skills-server`, tagged with
+   the branch name, the commit SHA, `latest` (on `main`), and the semver
+   tag/major.minor (on a `v*.*.*` tag) -- using the workflow's automatic
+   `GITHUB_TOKEN`, no separate registry credential to create or rotate.
+
+Pull the built image once it's pushed:
+
+```bash
+docker pull ghcr.io/nanoinfraorg/skills-server:latest
+```
+
+Since `nanoinfraorg/skills-server` is a private repo, the package GHCR
+creates from it is **private by default** -- pulling it (from another
+machine, a deploy host, etc.) needs `docker login ghcr.io` first, with a
+GitHub PAT that has `read:packages` scope (or a fine-grained token scoped to
+this repo's packages).
+
+To cut a versioned release, tag and push:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
