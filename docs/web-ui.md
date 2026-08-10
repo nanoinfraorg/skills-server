@@ -143,6 +143,27 @@ beyond logging the victim out (no data is read, changed, or exposed), and
 the endpoint is documented and tested as callable via `curl` + a bare
 session cookie, which a CSRF requirement would break.
 
+## Branding: footer and equal-height skill cards
+
+Every page's footer (`layout.html`) links `skills-server` to this
+project's own GitHub repository
+(https://github.com/nanoinfraorg/skills-server) and credits
+"nanoinfra.org" (https://nanoinfra.org) as the parent project -- that link
+is live even before nanoinfra.org itself has a public site up, since the
+footer's job is attribution, not proof the destination is fully built out
+yet.
+
+The `/skills` directory's cards (`skills.html`) sit in Pico's `.grid`,
+which already stretches every `<article>` in a row to match its tallest
+sibling (CSS Grid's default `align-items: stretch`) -- but without help,
+each card's footer just sits wherever its description text happens to
+end, so a short description leaves an awkward gap before the footer while
+a long one pushes it right up against the text. A small page-scoped
+`<style>` block (`.skill-cards > article { display: flex; flex-direction:
+column }` plus `flex: 1` on the description) pins every card's footer to
+the same bottom edge regardless of description length, so a row of cards
+reads as a tidy grid instead of cards of visibly different shapes.
+
 ## Vendored static assets
 
 `internal/web/static/`, embedded via `//go:embed` and served at
