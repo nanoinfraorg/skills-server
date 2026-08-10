@@ -1,0 +1,96 @@
+/* skills-server's own small theme layer on top of Pico CSS (pico.min.css).
+   Kept in one file and loaded on every page (see layout.html) so the site
+   has one consistent look instead of each template inventing its own
+   inline <style> block. Still no build step, no utility-class framework --
+   plain CSS, a handful of classes, applied on top of Pico's variables. */
+
+/* A slim colored bar across the very top of every page -- the one thing
+   present on every route, so the site reads as "branded" even on the
+   plainest pages (the 404, a bare message page, etc). */
+body {
+  border-top: 4px solid var(--pico-primary);
+}
+
+/* Nav: a small square brand mark before the site name, and a touch more
+   breathing room than Pico's default. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  text-decoration: none;
+}
+.brand::before {
+  content: "";
+  display: inline-block;
+  width: .65rem;
+  height: .65rem;
+  border-radius: 2px;
+  background: var(--pico-primary);
+}
+header.container nav { padding-top: .5rem; padding-bottom: .5rem; }
+
+/* Eyebrow: a small uppercase label above a page's <h1>, giving every page
+   (not just the home page's hero) a consistent bit of visual hierarchy. */
+.eyebrow {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--pico-primary);
+  margin-bottom: .25rem;
+}
+
+/* A little breathing room and a subtle rule above each section heading, so
+   a content-heavy page (the skill detail page especially) reads as
+   distinct sections rather than one long scroll. */
+main h2 {
+  margin-top: 2.5rem;
+  padding-bottom: .4rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+/* Verdict/status pills (Security Audits: PASS/WARN/FAIL/PENDING). Color
+   still comes from each mark's own inline style (the verdict decides it
+   server-side); this just gives every one of them the same pill shape
+   instead of <mark>'s default rectangular highlight. */
+.badge {
+  display: inline-block;
+  padding: .15rem .65rem;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+/* Home page hero band. */
+.hero {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pico-primary) 12%, transparent), transparent 70%);
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 2.5rem 2rem;
+  margin-bottom: 2.5rem;
+}
+.hero .eyebrow { margin-bottom: .5rem; }
+.hero h1 { margin-bottom: 1rem; }
+.hero p { max-width: 46rem; }
+
+/* Home page's three-up feature grid. */
+.features article { text-align: center; }
+.features article h3 { margin-bottom: .25rem; }
+
+/* Skill directory cards: equal-height with the footer pinned to the
+   bottom (Pico's .grid already stretches each <article> to the row's
+   tallest sibling; without flex the footer just sits wherever the
+   description text ends). A subtle lift on hover ties it to the same
+   "card" language as the home page's feature grid. */
+.skill-cards > article {
+  display: flex;
+  flex-direction: column;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.skill-cards > article > p { flex: 1; }
+.skill-cards > article:has(a:hover) {
+  transform: translateY(-2px);
+  box-shadow: var(--pico-card-box-shadow, 0 4px 12px rgba(0, 0, 0, .08));
+}

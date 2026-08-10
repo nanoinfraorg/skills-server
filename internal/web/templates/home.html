@@ -9,13 +9,33 @@
     {{if .User.IsAdmin}}<li><a href="/admin">Admin dashboard</a></li>{{end}}
   </ul>
 {{else}}
-  <h1>skills-server</h1>
-  <p>
-    A self-hosted Agent Skills marketplace: browse published skills, submit
-    your own, and track their review status. Signing in with Google is also
-    how you submit a skill for the first time -- there's no separate sign-up.
-  </p>
-  <p><a href="/auth/google/login" role="button">Sign in with Google</a></p>
-  <p><a href="/skills">Or just browse the public directory</a>, no sign-in required.</p>
+  <section class="hero">
+    <p class="eyebrow">Open source &middot; self-hosted &middot; scanned before it ships</p>
+    <h1>skills-server</h1>
+    <p>
+      A self-hosted Agent Skills marketplace: browse published skills, submit
+      your own, and track their review status. Signing in with Google is also
+      how you submit a skill for the first time -- there's no separate sign-up.
+    </p>
+    <p>
+      <a href="/auth/google/login" role="button">Sign in with Google</a>
+      <a href="/skills" role="button" class="secondary outline">Browse the public directory</a>
+    </p>
+  </section>
+
+  <div class="grid features">
+    <article>
+      <h3>Scanned before it ships</h3>
+      <p><small>Every skill passes a static/LLM security shield plus a VirusTotal multi-engine sweep before it's trusted.</small></p>
+    </article>
+    <article>
+      <h3>Nothing hidden</h3>
+      <p><small>See the exact SKILL.md, file listing, owner, and known risks for every published version -- no black boxes.</small></p>
+    </article>
+    <article>
+      <h3>Yours to run</h3>
+      <p><small>Self-hosted, open source, no vendor lock-in -- just a portable SKILL.md format you can take anywhere.</small></p>
+    </article>
+  </div>
 {{end}}
 {{end}}
