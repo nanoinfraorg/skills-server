@@ -247,14 +247,24 @@ func TestRunOnce_BackfillsVirusTotalForPreExistingSkill(t *testing.T) {
 
 	RunOnce(ctx, deps)
 
-	waitForCondition(t, time.Second, func() bool { return vt.calls() == 1 })
-
-	row, err := db.GetLatestVirusTotalScan(ctx, sv.ID)
-	if err != nil {
-		t.Fatalf("get latest virustotal scan: %v", err)
-	}
+	// Wait for the row itself, not just Upload having been called: the
+	// backfill goroutine calls client.Upload (which increments vt.calls())
+	// and then separately writes the virustotal_scans row, so waiting on
+	// call count alone raced with the write and made this test flaky.
+	var row *store.VirusTotalScan
+	waitForCondition(t, time.Second, func() bool {
+		r, err := db.GetLatestVirusTotalScan(ctx, sv.ID)
+		if err != nil {
+			return false
+		}
+		row = r
+		return true
+	})
 	if row.Status != store.VirusTotalScanPending {
 		t.Errorf("status = %s, want pending", row.Status)
+	}
+	if got := vt.calls(); got != 1 {
+		t.Errorf("uploadCalls = %d, want 1", got)
 	}
 }
 
