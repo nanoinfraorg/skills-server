@@ -347,9 +347,13 @@ type submitPageData struct {
 	// Owner and Risks are the two optional "Skill Card" free-text fields
 	// (see submissionDTO/skillVersionDetailDTO's doc comments in
 	// internal/api/json.go for the full rationale): pre-filled the same way
-	// as DisplayName -- empty for a fresh submission, the current version's
-	// values when editing, or whatever the visitor last typed if a previous
-	// POST to this same page failed validation.
+	// as DisplayName -- the current version's values when editing, or
+	// whatever the visitor last typed if a previous POST to this same page
+	// failed validation. Owner additionally defaults to the logged-in
+	// session's own email on a fresh form, or an edit of a version that
+	// never set one (see SubmitForm) -- a visible, fully editable
+	// suggestion against an accidentally-blank field, not a server-side
+	// default: clearing it before submitting still stores an empty value.
 	Owner string
 	Risks string
 	// SkillMD is the textarea's pre-filled content: empty for a fresh
@@ -378,6 +382,12 @@ type submitPageData struct {
 // submission for an existing skill_id, handled identically to any other
 // (see SubmitCreate). An id that doesn't resolve to a real skill falls
 // through to a plain, unlocked form: there's nothing yet to edit.
+//
+// Separately, whenever the resolved Owner value is still blank at this
+// point (a fresh submission, or an edit of a version that never set one),
+// it's suggested-filled with the logged-in session's own verified email --
+// see submitPageData.Owner's doc comment for why this is a visible,
+// editable nudge rather than a silent server-side default.
 func (h *Handler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 	sess, ok := h.requireSession(w, r, store.SessionRoleSubmitter)
 	if !ok {
@@ -400,6 +410,20 @@ func (h *Handler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, store.ErrNotFound) {
 			h.Logger.Error("get skill detail for edit prefill", "error", err, "skill_id", editID)
 		}
+	}
+
+	// Owner is deliberately "beyond the submitter's auth identity" (see
+	// submitPageData's doc comment) -- it can name a different person or a
+	// whole team -- so there is no server-side default when it's left
+	// blank; an omitted Owner is stored as empty, same as today. But a
+	// fresh form (or an edit of a version that never set one) suggesting
+	// the logged-in submitter's own verified email as a starting point is a
+	// reasonable nudge against an accidentally-blank field: it's visible
+	// and fully editable before the visitor ever submits, and clearing it
+	// still submits an empty value, exactly like leaving it untouched on a
+	// form that never suggested anything would.
+	if data.Owner == "" {
+		data.Owner = sess.Email
 	}
 
 	h.renderSubmitForm(w, http.StatusOK, sess, data)

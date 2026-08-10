@@ -72,10 +72,19 @@ considerations, signing identifiers). Only three lines are shown:
 
 - **Owner** -- an optional, submitter-provided free-text field (`owner` on
   `store.Submission`/`store.SkillVersion`) naming who's accountable for the
-  skill (a name, email, or team). Rendered only when set; no placeholder is
-  shown otherwise, matching this page's existing "don't render a
-  placeholder for absent optional data" convention (see the VirusTotal audit
-  row below).
+  skill (a name, email, or team) -- deliberately "beyond the submitter's
+  auth identity", since accountability doesn't always match whoever happens
+  to click submit. Rendered only when set on the detail page; no
+  placeholder is shown otherwise, matching this page's existing "don't
+  render a placeholder for absent optional data" convention (see the
+  VirusTotal audit row below). On `GET /submit`, when Owner would otherwise
+  be blank (a fresh submission, or an edit of a version that never set one),
+  the field is *suggested-filled* with the logged-in session's own verified
+  email (`internal/web/pages.go`'s `SubmitForm`) -- a visible, fully
+  editable nudge against an accidentally-empty field, not a hidden
+  server-side default: the visitor sees it, can clear or change it, and
+  whatever's in the field when they submit (including empty) is exactly
+  what's stored.
 - **Risks and mitigations** -- an optional, submitter-provided free-text
   field (`risks`) describing what could go wrong with the skill and how
   that's mitigated (e.g. "runs arbitrary shell commands -- review scripts/

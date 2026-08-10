@@ -1373,6 +1373,65 @@ func TestSubmitForm_EditPrefillIncludesOwnerAndRisks(t *testing.T) {
 	}
 }
 
+// TestSubmitForm_FreshSubmissionSuggestsSessionEmailAsOwner confirms a
+// brand-new, non-edit visit to /submit suggests the logged-in session's own
+// verified email as the Owner field's starting value -- a visible, fully
+// editable nudge against an accidentally-blank field, not a hidden
+// server-side default (see submitPageData.Owner's doc comment). This is
+// deliberately different from Owner's general "beyond the submitter's auth
+// identity" design: it's a suggestion the visitor sees and can clear or
+// change before ever submitting, not a value silently substituted in later.
+func TestSubmitForm_FreshSubmissionSuggestsSessionEmailAsOwner(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "fresh-owner@example.com", store.SessionRoleSubmitter, "csrf-fresh")
+
+	req := httptest.NewRequest(http.MethodGet, "/submit", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `value="fresh-owner@example.com"`) {
+		t.Errorf("expected the owner field suggested with the session email, body: %s", rec.Body.String())
+	}
+}
+
+// TestSubmitForm_EditPrefillOwnerFallsBackToSessionEmailWhenUnset confirms
+// the same suggested-default applies when editing an existing skill whose
+// current version never set an Owner -- an already-set Owner (see
+// TestSubmitForm_EditPrefillIncludesOwnerAndRisks) must never be
+// overridden by this fallback, but a genuinely unset one gets the same
+// nudge a fresh submission does.
+func TestSubmitForm_EditPrefillOwnerFallsBackToSessionEmailWhenUnset(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "eta", Version: 1, SubmissionID: "seed-eta", DisplayName: "Eta",
+		Description: "No owner set on this version.", GitHubPath: "eta/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "eta", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	cookie := seedSession(t, apiHandler, "eta-editor@example.com", store.SessionRoleSubmitter, "csrf-eta")
+	req := httptest.NewRequest(http.MethodGet, "/submit?skill_id=eta", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `value="eta-editor@example.com"`) {
+		t.Errorf("expected the owner field to fall back to the session email when the version has none, body: %s", rec.Body.String())
+	}
+}
+
 // TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet confirms the detail
 // page's "Skill Card" section renders Owner/Risks rows when the current
 // version has them set, plus the always-present static license/terms line
