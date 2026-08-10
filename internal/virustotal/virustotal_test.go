@@ -221,6 +221,61 @@ func TestRunOnce_CompletedVerdictMappings(t *testing.T) {
 	}
 }
 
+// TestRunOnce_MaliciousVerdictQuarantinesSkillVersion confirms a "fail"
+// verdict (at least one engine reports the file outright malicious) does
+// what a badge alone can't: it actually quarantines the skill version via
+// the same store.SetSkillVersionStatus mechanism the scan shield's own
+// "blocked" verdict already uses. See client.go's "Scoping decision" doc
+// comment for why only "fail", not "warn", triggers this.
+func TestRunOnce_MaliciousVerdictQuarantinesSkillVersion(t *testing.T) {
+	s := newTestStore(t)
+	svID := seedSkillVersion(t, s, "malicious-skill")
+	analysisID := "analysis-malicious"
+	if _, err := s.CreateVirusTotalScan(context.Background(), svID, analysisID, time.Now()); err != nil {
+		t.Fatalf("seed pending scan: %v", err)
+	}
+
+	client := &fakeClient{analyses: map[string]*Analysis{
+		analysisID: {Status: StatusCompleted, Malicious: 3, Suspicious: 1, Harmless: 60, Undetected: 6},
+	}}
+	RunOnce(context.Background(), Deps{Store: s, Client: client, Logger: testLogger()})
+
+	sv, err := s.GetSkillVersion(context.Background(), "malicious-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+	if sv.Status != store.SkillVersionQuarantined {
+		t.Errorf("status = %s, want quarantined", sv.Status)
+	}
+}
+
+// TestRunOnce_SuspiciousOnlyVerdictDoesNotQuarantine confirms a "warn"
+// verdict (suspicious engines only, no outright malicious detection) never
+// quarantines anything -- that tier stays a badge for a human to weigh,
+// not an automatic action, since heuristic-only "suspicious" flags are
+// common false positives across VirusTotal's ~70 engines.
+func TestRunOnce_SuspiciousOnlyVerdictDoesNotQuarantine(t *testing.T) {
+	s := newTestStore(t)
+	svID := seedSkillVersion(t, s, "suspicious-skill")
+	analysisID := "analysis-suspicious"
+	if _, err := s.CreateVirusTotalScan(context.Background(), svID, analysisID, time.Now()); err != nil {
+		t.Fatalf("seed pending scan: %v", err)
+	}
+
+	client := &fakeClient{analyses: map[string]*Analysis{
+		analysisID: {Status: StatusCompleted, Malicious: 0, Suspicious: 2, Harmless: 65, Undetected: 5},
+	}}
+	RunOnce(context.Background(), Deps{Store: s, Client: client, Logger: testLogger()})
+
+	sv, err := s.GetSkillVersion(context.Background(), "suspicious-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+	if sv.Status != store.SkillVersionPublished {
+		t.Errorf("status = %s, want published (unaffected by a warn-only verdict)", sv.Status)
+	}
+}
+
 func TestRunOnce_RateLimitErrorLeavesRowPendingAndDoesNotCrash(t *testing.T) {
 	s := newTestStore(t)
 	svID := seedSkillVersion(t, s, "rate-limited-skill")

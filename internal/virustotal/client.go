@@ -17,14 +17,16 @@
 // skills that later turn out bad), applied here to a different one
 // (waiting for a slow third party).
 //
-// Scoping decision: nothing in this package ever quarantines a skill
-// automatically based on a VirusTotal finding. Multiple independent AV
-// engines flagging a file is useful signal for a human reviewer, but false
-// positives across the ~70 engines VirusTotal aggregates are common enough
-// that auto-quarantining on this alone would be a bigger policy decision
-// than "add a badge to the Security Audits panel" -- see ComputeVerdict's
-// doc comment and RunOnce's doc comment for where this is enforced (nowhere
-// in this package calls store.SetSkillVersionStatus).
+// Scoping decision: only a "fail" verdict (ComputeVerdict -- at least one
+// engine reports the file outright malicious, a real detection rather than
+// a heuristic guess) quarantines the skill version automatically
+// (RunOnce's quarantineOnFailVerdict, via the same store.SetSkillVersionStatus
+// the scan shield's own "blocked" verdict already uses). A "warn"
+// (suspicious-only) verdict never does: false positives on a heuristic
+// "suspicious" flag are common enough, across the ~70 engines VirusTotal
+// aggregates, that treating that tier as a hard finding would flag
+// legitimate skills too often -- it stays a badge for a human to weigh, not
+// an automatic action. See ComputeVerdict's and RunOnce's doc comments.
 //
 // The whole feature is optional: if VIRUSTOTAL_API_KEY is unset,
 // cmd/skills-server/main.go never constructs a Client, never starts the

@@ -51,10 +51,16 @@ func Run(ctx context.Context, interval time.Duration, deps Deps) {
 // A row whose analysis completed has its per-engine stats recorded
 // (store.UpdateVirusTotalScanResult) and its status flips to "completed".
 //
-// This never quarantines a skill version, regardless of what the stats say
-// -- see this package's doc comment ("Scoping decision") for why that's a
-// deliberate, separate policy decision left for later, not an oversight.
-// RunOnce only ever calls store methods that touch virustotal_scans.
+// A completed analysis whose verdict is "fail" (ComputeVerdict -- at least
+// one engine reports the file outright malicious, not merely "suspicious")
+// quarantines that skill version (store.SetSkillVersionStatus), the same
+// mechanism and status the scan shield's own "blocked" verdict already
+// uses. This is deliberately narrower than the scoping this package
+// originally shipped with ("never quarantines... a bigger policy decision
+// than a badge"): a "warn" (suspicious-only, heuristic, prone to false
+// positives across ~70 engines) still never quarantines anything -- only
+// "fail", a real cross-engine malware detection, does. RunOnce only
+// touches virustotal_scans itself otherwise.
 //
 // A transient failure to check one analysis (network error, VirusTotal's
 // ~4-requests/minute free-tier rate limit, a 5xx, ...) is logged and that
@@ -110,7 +116,34 @@ func RunOnce(ctx context.Context, deps Deps) {
 		completed++
 		deps.Logger.Info("virustotal poll: analysis completed",
 			"skill_version_id", row.SkillVersionID, "malicious", analysis.Malicious, "suspicious", analysis.Suspicious)
+
+		if ComputeVerdict(analysis.Malicious, analysis.Suspicious) == "fail" {
+			quarantineOnFailVerdict(ctx, deps, row.SkillVersionID, analysis.Malicious)
+		}
 	}
 
 	deps.Logger.Info("virustotal poll run complete", "checked", checked, "completed", completed, "total_pending", len(pending))
+}
+
+// quarantineOnFailVerdict looks up skillVersionID's actual skill_id/version
+// (store.SetSkillVersionStatus needs that pair, not the row id
+// virustotal_scans stores) and quarantines it. A lookup or update failure
+// is logged, not retried or escalated -- the virustotal_scans row itself
+// was already recorded successfully by the time this runs, so a failure
+// here just means the FAIL badge shows without the skill actually being
+// pulled from availability; that's a real gap but not one worth blocking
+// the rest of this poll pass over, matching this function's callers'
+// general "log and move on" posture.
+func quarantineOnFailVerdict(ctx context.Context, deps Deps, skillVersionID int64, malicious int64) {
+	sv, err := deps.Store.GetSkillVersionByID(ctx, skillVersionID)
+	if err != nil {
+		deps.Logger.Error("virustotal poll: could not look up skill version to quarantine", "error", err, "skill_version_id", skillVersionID)
+		return
+	}
+	if err := deps.Store.SetSkillVersionStatus(ctx, sv.SkillID, sv.Version, store.SkillVersionQuarantined); err != nil {
+		deps.Logger.Error("virustotal poll: could not quarantine skill version", "error", err, "skill_id", sv.SkillID, "version", sv.Version)
+		return
+	}
+	deps.Logger.Warn("virustotal poll: quarantined skill version on a malicious VirusTotal verdict",
+		"skill_id", sv.SkillID, "version", sv.Version, "malicious_engines", malicious)
 }

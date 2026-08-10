@@ -30,14 +30,15 @@
     <li>
       {{.Name}}
       {{if eq .Status "pass"}}
-        <mark class="badge" style="background: #1a7f37; color: #fff;" title="{{.Detail}}">PASS</mark>
+        <mark class="badge" style="background: #1a7f37; color: #fff;">PASS</mark>
       {{else if eq .Status "warn"}}
-        <mark class="badge" style="background: #b45309; color: #fff;" title="{{.Detail}}">WARN</mark>
+        <mark class="badge" style="background: #b45309; color: #fff;">WARN</mark>
       {{else if eq .Status "fail"}}
-        <mark class="badge" style="background: #b91c1c; color: #fff;" title="{{.Detail}}">FAIL</mark>
+        <mark class="badge" style="background: #b91c1c; color: #fff;">FAIL</mark>
       {{else}}
-        <mark class="badge" style="background: var(--pico-muted-color); color: #fff;" title="{{.Detail}}">PENDING</mark>
+        <mark class="badge" style="background: var(--pico-muted-color); color: #fff;">PENDING</mark>
       {{end}}
+      <small>{{.Detail}}{{if .Permalink}} (<a href="{{.Permalink}}" target="_blank" rel="noopener noreferrer">full report</a>){{end}}</small>
     </li>
   {{end}}
   </ul>

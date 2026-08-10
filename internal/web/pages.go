@@ -149,6 +149,12 @@ type securityAudit struct {
 	// color in skill_detail.html.
 	Status string
 	Detail string
+	// Permalink, when set, is an external URL to this audit's own full
+	// report -- currently only VirusTotal sets this (its GUI page with the
+	// complete per-engine breakdown; see virustotal.Analysis.Permalink).
+	// Empty for NanoInfra Scanner (no external report to link to) and for
+	// a VirusTotal entry that isn't yet "completed".
+	Permalink string
 }
 
 // nanoinfraScannerAudit maps our own scan shield's verdict (see
@@ -204,7 +210,11 @@ func virusTotalAudit(vt *store.VirusTotalScan) *securityAudit {
 		if flagged == 0 {
 			detail = "no engines flagged this file"
 		}
-		return &securityAudit{Name: "VirusTotal", Status: virustotal.ComputeVerdict(malicious, suspicious), Detail: detail}
+		permalink := ""
+		if vt.Permalink != nil {
+			permalink = *vt.Permalink
+		}
+		return &securityAudit{Name: "VirusTotal", Status: virustotal.ComputeVerdict(malicious, suspicious), Detail: detail, Permalink: permalink}
 	default: // store.VirusTotalScanError, or any future/unrecognized status
 		return &securityAudit{Name: "VirusTotal", Status: "warn", Detail: "analysis could not be completed"}
 	}
