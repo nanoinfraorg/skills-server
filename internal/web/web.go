@@ -65,6 +65,23 @@ func Register(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /admin/skills/{id}/rescan", h.AdminRescan)
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
+
+	// Catch-all: any request that doesn't match a more specific pattern
+	// above (including a path under /api/v1 or /auth that isn't a real
+	// route -- api.NewMux's own patterns are all more specific than a bare
+	// "/", so they still win) falls through to here rather than net/http's
+	// unstyled default "404 page not found". "/" matches everything not
+	// otherwise matched, but not "/{$}" (the exact root), which Home
+	// already claims and which takes precedence as the more specific
+	// pattern.
+	mux.HandleFunc("/", h.NotFound)
+}
+
+// NotFound renders the site's own styled "not found" page (nav, layout,
+// footer) for any request that doesn't match a real route, instead of
+// net/http's plain-text default.
+func (h *Handler) NotFound(w http.ResponseWriter, r *http.Request) {
+	h.renderMessage(w, http.StatusNotFound, h.sessionFromRequest(r), "Not found", "No such page.")
 }
 
 // NavUser is the current session's identity, as shown in every page's nav

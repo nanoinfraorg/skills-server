@@ -264,6 +264,38 @@ func TestSkillDetail_FoundAndNotFound(t *testing.T) {
 	}
 }
 
+// TestCatchAll_UnknownPathRendersStyled404 confirms a path matching no
+// registered route (not "/skills/{id}" with a bad id -- a path with no
+// route at all) gets the site's own styled not-found page instead of
+// net/http's plain-text default, and that real routes (including the
+// exact root "/" and the JSON API's own paths, both far more specific
+// patterns) are unaffected by the "/" catch-all.
+func TestCatchAll_UnknownPathRendersStyled404(t *testing.T) {
+	h, _, _ := testHandler(t)
+	mux := newMux(h)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/this/path/does/not/exist", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "skills-server") || !strings.Contains(rec.Body.String(), "No such page") {
+		t.Errorf("expected the site's styled layout/message, got: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("exact root status = %d, want 200 (Home, not the catch-all)", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("healthz status = %d, want 200 (api.NewMux's route, not the catch-all)", rec.Code)
+	}
+}
+
 func TestSkillDetail_QuarantinedShowsClearly(t *testing.T) {
 	h, apiHandler, _ := testHandler(t)
 	mux := newMux(h)
