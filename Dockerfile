@@ -6,14 +6,9 @@
 # fully static binary here, with no C toolchain, glibc, or libsqlite3 needed
 # in either stage.
 #
-# --platform=$BUILDPLATFORM pins this stage to the *build* machine's native
-# architecture even when buildx is asked for other target platforms (e.g.
-# linux/arm64 on an amd64 GitHub Actions runner): Go itself cross-compiles
-# natively via GOOS/GOARCH, so there is no need to run this stage under QEMU
-# emulation, which would otherwise emulate the compiler too, not just the
-# final binary -- a needless slowdown for a cross-compile this simple.
-# BUILDPLATFORM/TARGETOS/TARGETARCH are buildx's automatic platform args.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+# amd64 only, by design (see .github/workflows/ci.yml) -- no multi-arch, so
+# no cross-compilation or QEMU concerns here.
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -22,9 +17,7 @@ RUN go mod download
 COPY . .
 
 ARG VERSION=dev
-ARG TARGETOS
-ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/skills-server \
