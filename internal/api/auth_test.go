@@ -438,6 +438,23 @@ func TestLogout_NoSessionCookieStillReturns200(t *testing.T) {
 	}
 }
 
+func TestLogout_BrowserRequestRedirectsHome(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, want %q", loc, "/")
+	}
+}
+
 func TestCreateSubmission_SessionEmailOverridesClientSuppliedSubmitter(t *testing.T) {
 	h := testGoogleAuthHandler(t, nil, nil, nil)
 	mux := NewMux(h)

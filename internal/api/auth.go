@@ -139,9 +139,18 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 // Logout deletes the session named by the request's session cookie (if
-// any) and clears the cookie client-side. It always returns 200, whether
-// or not a session existed -- logging out an already-logged-out client is
-// not an error.
+// any) and clears the cookie client-side. It always succeeds, whether or
+// not a session existed -- logging out an already-logged-out client is not
+// an error.
+//
+// Response shape is content-negotiated on the Accept header: a browser
+// navigating here via the web UI's nav form sends Accept: text/html,...
+// by default, so it gets a 302 back to "/" instead of landing on a bare,
+// blank /auth/logout page. A plain API call (curl, no Accept header, per
+// docs/api.md's example) gets the original 200-no-body response, so that
+// documented contract is unchanged. See TestLogout_NoSessionCookieStillReturns200
+// and TestLogout_InvalidatesSession, neither of which sets Accept and both
+// of which assert exactly 200.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
 		if err := h.Store.DeleteSession(r.Context(), cookie.Value); err != nil {
@@ -157,5 +166,9 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
