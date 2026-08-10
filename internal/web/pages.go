@@ -36,7 +36,7 @@ var maxUploadBytes = pipeline.MaxArchiveBytes + 1<<20
 // for a signed-in one.
 func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFromRequest(r)
-	h.render(w, http.StatusOK, "home.html", basePage{Title: "skills-server", User: navUser(sess)})
+	h.render(w, http.StatusOK, "home.html", basePage{User: navUser(sess)})
 }
 
 // skillsPageData is the data shape for skills.html (the public directory).
