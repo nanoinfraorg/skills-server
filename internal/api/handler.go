@@ -19,6 +19,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
 // SessionCookieName is the HTTP-only cookie set on a successful
@@ -91,6 +92,14 @@ type Handler struct {
 	// -- not the inbound request's r.TLS -- to decide the session cookie's
 	// Secure attribute, when set.
 	PublicBaseURL string
+	// VirusTotalClient optionally enables the VirusTotal integration (see
+	// internal/virustotal's package doc comment): nil unless
+	// VIRUSTOTAL_API_KEY was set at startup, in which case
+	// ApproveSubmissionCore fires off a background upload after a
+	// successful publish. Left nil, the feature is skipped entirely --
+	// no upload is attempted and no VirusTotal entry ever appears in the
+	// Security Audits panel.
+	VirusTotalClient virustotal.Client
 	// Now returns the current time; overridable in tests for deterministic
 	// timestamps.
 	Now func() time.Time

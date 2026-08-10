@@ -15,7 +15,8 @@ OAuth client ID → Web application** -- and `GOOGLE_REDIRECT_URL`
 registered there as an authorized redirect URI. This can't be automated.
 
 The process listens for `SIGINT`/`SIGTERM` and shuts down gracefully,
-stopping the daily scan scheduler cleanly.
+stopping the daily scan scheduler and the VirusTotal poller (if enabled)
+cleanly.
 
 ## Environment variables
 
@@ -33,6 +34,10 @@ See `.env.example` for the full list with inline descriptions.
 **Optional**, all-or-nothing (LLM classification is skipped if any is
 unset): `LLM_API_BASE`, `LLM_API_KEY`, `LLM_MODEL`.
 
+**Optional** (the VirusTotal integration is skipped entirely if unset --
+see [architecture.md](architecture.md)): `VIRUSTOTAL_API_KEY`,
+`VIRUSTOTAL_POLL_INTERVAL` (`3m`).
+
 **Optional**, permissive if unset (see
 [authentication.md](authentication.md)): `SUBMITTER_EMAILS`.
 
@@ -48,7 +53,8 @@ Multi-stage build: `golang:1.26-alpine` compiles a fully static binary
 (`CGO_ENABLED=0` -- the SQLite driver, `modernc.org/sqlite`, is pure Go,
 no C toolchain needed), on top of `gcr.io/distroless/static-debian12:nonroot`
 -- no shell, no package manager, non-root, ca-certificates already
-present for the outbound GitHub/Google/LLM calls this server makes.
+present for the outbound GitHub/Google/LLM/VirusTotal calls this server
+makes.
 
 ```bash
 docker build -t skills-server .

@@ -17,6 +17,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
 // directoryLimit caps how many skills the directory page shows for a
@@ -101,12 +102,12 @@ type skillDetailPageData struct {
 	// archive couldn't be read.
 	Files []pipeline.Entry
 	// SecurityAudits lists every named security check run against this
-	// version, each with a PASS/WARN/FAIL/PENDING-style status -- currently
-	// just our own scan shield ("NanoInfra Scanner"), structured as a slice
-	// so a future third-party check (e.g. VirusTotal) can be added as a
-	// second entry without changing this shape. Empty if no scan has run
-	// yet for this version (shouldn't happen for a real published version,
-	// but isn't fatal to the page if it does).
+	// version, each with a PASS/WARN/FAIL/PENDING-style status: our own scan
+	// shield ("NanoInfra Scanner"), always present, plus a second
+	// "VirusTotal" entry -- only when VirusTotal is configured
+	// (VIRUSTOTAL_API_KEY set) and an upload was actually attempted for
+	// this version (see virusTotalAudit's doc comment for exactly when
+	// that second entry does or doesn't appear).
 	SecurityAudits []securityAudit
 }
 
@@ -140,6 +141,52 @@ func nanoinfraScannerAudit(sc *store.Scan) securityAudit {
 	default:
 		return securityAudit{Name: "NanoInfra Scanner", Status: "pending", Detail: string(sc.Verdict)}
 	}
+}
+
+// virusTotalAudit maps a VirusTotal analysis row (see internal/virustotal)
+// to the detail page's badge vocabulary, or returns nil when there is
+// nothing to show at all: vt is nil whenever VirusTotal isn't configured, or
+// is configured but the fire-and-forget upload for this version never
+// created a row (an upload failure -- see UploadAndRecord's doc comment).
+// Either way the panel shows no VirusTotal entry, not a placeholder --
+// exactly like the scan shield's own optional LLM classification pass has
+// no "not configured" row today.
+//
+// The public error_detail text is deliberately not surfaced here even for
+// a store.VirusTotalScanError row: it may contain raw client-library error
+// text, which isn't something to show on a page anyone can load
+// unauthenticated.
+func virusTotalAudit(vt *store.VirusTotalScan) *securityAudit {
+	if vt == nil {
+		return nil
+	}
+	switch vt.Status {
+	case store.VirusTotalScanPending:
+		return &securityAudit{Name: "VirusTotal", Status: "pending", Detail: "queued for analysis"}
+	case store.VirusTotalScanCompleted:
+		malicious := int64Value(vt.MaliciousCount)
+		suspicious := int64Value(vt.SuspiciousCount)
+		harmless := int64Value(vt.HarmlessCount)
+		undetected := int64Value(vt.UndetectedCount)
+		flagged := malicious + suspicious
+		total := flagged + harmless + undetected
+		detail := fmt.Sprintf("%d/%d engines flagged this file", flagged, total)
+		if flagged == 0 {
+			detail = "no engines flagged this file"
+		}
+		return &securityAudit{Name: "VirusTotal", Status: virustotal.ComputeVerdict(malicious, suspicious), Detail: detail}
+	default: // store.VirusTotalScanError, or any future/unrecognized status
+		return &securityAudit{Name: "VirusTotal", Status: "warn", Detail: "analysis could not be completed"}
+	}
+}
+
+// int64Value returns *p, or 0 if p is nil -- used for VirusTotalScan's
+// count fields, which are nil until the analysis completes.
+func int64Value(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // SkillDetail renders "/skills/{id}": the current version's description,
@@ -182,10 +229,11 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The current version's row id (not its user-facing version number) is
-	// what scans.target_id actually stores for a ScanTargetSkillVersion row
-	// -- find it in the already-fetched version history rather than an
-	// extra store round trip.
+	// what scans.target_id and virustotal_scans.skill_version_id actually
+	// store -- find it in the already-fetched version history rather than
+	// an extra store round trip.
 	var currentScan *store.Scan
+	var currentVTScan *store.VirusTotalScan
 	for _, v := range versions {
 		if v.Version == skill.Version {
 			sc, scanErr := h.API.Store.GetLatestScan(r.Context(), store.ScanTargetSkillVersion, api.ScanIDString(v.ID))
@@ -194,8 +242,19 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 			} else if !errors.Is(scanErr, store.ErrNotFound) {
 				h.Logger.Error("get latest scan for skill detail page", "error", scanErr, "skill_id", id)
 			}
+			vtScan, vtErr := h.API.Store.GetLatestVirusTotalScan(r.Context(), v.ID)
+			if vtErr == nil {
+				currentVTScan = vtScan
+			} else if !errors.Is(vtErr, store.ErrNotFound) {
+				h.Logger.Error("get latest virustotal scan for skill detail page", "error", vtErr, "skill_id", id)
+			}
 			break
 		}
+	}
+
+	audits := []securityAudit{nanoinfraScannerAudit(currentScan)}
+	if vtAudit := virusTotalAudit(currentVTScan); vtAudit != nil {
+		audits = append(audits, *vtAudit)
 	}
 
 	h.render(w, http.StatusOK, "skill_detail.html", skillDetailPageData{
@@ -204,7 +263,7 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		Versions:       versions,
 		Content:        content,
 		Files:          files,
-		SecurityAudits: []securityAudit{nanoinfraScannerAudit(currentScan)},
+		SecurityAudits: audits,
 	})
 }
 

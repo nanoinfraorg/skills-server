@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -13,11 +14,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
 const testValidSkillMD = "---\nname: my-skill\ndescription: Does a useful thing.\n---\n\nBody.\n"
@@ -41,6 +44,64 @@ func (f *fakePublisher) PublishFiles(_ context.Context, skillID string, files []
 	}
 	f.calls = append(f.calls, fakePublishCall{skillID: skillID, files: files, message: message})
 	return nil
+}
+
+// fakeVTClient stands in for a real github.com/VirusTotal/vt-go client,
+// exactly like fakePublisher stands in for internal/github.Client -- no
+// test in this package ever makes a real call to VirusTotal. It's
+// concurrency-safe because ApproveSubmissionCore's VirusTotal upload runs in
+// its own goroutine (see triggerVirusTotalUpload), so a test observing its
+// call count/args from the main test goroutine needs the mutex.
+type fakeVTClient struct {
+	mu           sync.Mutex
+	uploadCalls  int
+	lastFilename string
+	analysisID   string
+	uploadErr    error
+}
+
+func (f *fakeVTClient) Upload(_ context.Context, r io.Reader, filename string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploadCalls++
+	f.lastFilename = filename
+	if f.uploadErr != nil {
+		return "", f.uploadErr
+	}
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return "", err
+	}
+	return f.analysisID, nil
+}
+
+func (f *fakeVTClient) GetAnalysis(context.Context, string) (*virustotal.Analysis, error) {
+	return nil, errors.New("fakeVTClient: GetAnalysis is not exercised by these tests")
+}
+
+func (f *fakeVTClient) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.uploadCalls
+}
+
+// waitForCondition polls cond every 5ms until it returns true or timeout
+// elapses, failing the test in the latter case. Used for the handful of
+// assertions that depend on the background goroutine
+// triggerVirusTotalUpload spawns having run -- the upload itself is a fake
+// with no real network latency, so this resolves in practice within a
+// millisecond or two; the timeout is generous headroom, not an expected wait.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition not met within %s", timeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // testHandler wires a fresh in-memory-backed Handler (SQLite on a temp file,
@@ -922,5 +983,118 @@ func TestHealthz(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestApproveSubmission_VirusTotalNotConfiguredSkipsUploadEntirely(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+	// h.VirusTotalClient is left nil by testHandler, mirroring
+	// VIRUSTOTAL_API_KEY being unset -- the default, expected shape for
+	// almost every deployment.
+
+	archive := buildZip(t, map[string]string{"SKILL.md": testValidSkillMD})
+	id := createPendingSubmission(t, h, mux, "my-skill", archive)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, adminRequest(http.MethodPost, "/api/v1/admin/submissions/"+id+"/approve", "admin-secret", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	versions, err := h.Store.ListSkillVersions(context.Background(), "my-skill")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
+	}
+	if _, err := h.Store.GetLatestVirusTotalScan(context.Background(), versions[0].ID); err != store.ErrNotFound {
+		t.Errorf("expected no virustotal scan row when unconfigured, got err=%v", err)
+	}
+}
+
+func TestApproveSubmission_VirusTotalUploadSuccessCreatesPendingRowWithoutBlockingApprove(t *testing.T) {
+	h, _ := testHandler(t)
+	vtClient := &fakeVTClient{analysisID: "analysis-xyz"}
+	h.VirusTotalClient = vtClient
+	mux := NewMux(h)
+
+	archive := buildZip(t, map[string]string{
+		"SKILL.md":       testValidSkillMD,
+		"scripts/run.py": "print('ok')\n",
+	})
+	id := createPendingSubmission(t, h, mux, "my-skill", archive)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, adminRequest(http.MethodPost, "/api/v1/admin/submissions/"+id+"/approve", "admin-secret", nil))
+	// The approve response must come back with the normal "published"
+	// outcome -- VirusTotal's upload runs in the background and must not
+	// change or delay this response.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON[map[string]any](t, rec.Body)
+	if resp["outcome"] != "published" {
+		t.Fatalf("outcome = %v, want published", resp["outcome"])
+	}
+
+	versions, err := h.Store.ListSkillVersions(context.Background(), "my-skill")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
+	}
+	skillVersionID := versions[0].ID
+
+	waitForCondition(t, time.Second, func() bool {
+		_, err := h.Store.GetLatestVirusTotalScan(context.Background(), skillVersionID)
+		return err == nil
+	})
+
+	got, err := h.Store.GetLatestVirusTotalScan(context.Background(), skillVersionID)
+	if err != nil {
+		t.Fatalf("get latest virustotal scan: %v", err)
+	}
+	if got.AnalysisID != "analysis-xyz" || got.Status != store.VirusTotalScanPending {
+		t.Errorf("unexpected virustotal scan row: %+v", got)
+	}
+	if vtClient.callCount() != 1 {
+		t.Errorf("expected exactly 1 upload call, got %d", vtClient.callCount())
+	}
+	if vtClient.lastFilename != "my-skill.zip" {
+		t.Errorf("uploaded filename = %q, want my-skill.zip", vtClient.lastFilename)
+	}
+}
+
+func TestApproveSubmission_VirusTotalUploadFailureCreatesNoRowAndDoesNotFailApprove(t *testing.T) {
+	h, _ := testHandler(t)
+	vtClient := &fakeVTClient{uploadErr: errors.New("connection refused")}
+	h.VirusTotalClient = vtClient
+	mux := NewMux(h)
+
+	archive := buildZip(t, map[string]string{"SKILL.md": testValidSkillMD})
+	id := createPendingSubmission(t, h, mux, "my-skill", archive)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, adminRequest(http.MethodPost, "/api/v1/admin/submissions/"+id+"/approve", "admin-secret", nil))
+	// A VirusTotal outage must not fail, delay, or roll back a publish that
+	// otherwise fully succeeded.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON[map[string]any](t, rec.Body)
+	if resp["outcome"] != "published" {
+		t.Fatalf("outcome = %v, want published", resp["outcome"])
+	}
+
+	versions, err := h.Store.ListSkillVersions(context.Background(), "my-skill")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
+	}
+	skillVersionID := versions[0].ID
+
+	// Wait for the background upload attempt to actually happen (it always
+	// fails on this path, so waiting for it doesn't race with any store
+	// write -- CreateVirusTotalScan is never reached when Upload errors).
+	waitForCondition(t, time.Second, func() bool { return vtClient.callCount() == 1 })
+
+	if _, err := h.Store.GetLatestVirusTotalScan(context.Background(), skillVersionID); err != store.ErrNotFound {
+		t.Errorf("expected no virustotal scan row on upload failure, got err=%v", err)
 	}
 }

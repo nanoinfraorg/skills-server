@@ -22,6 +22,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/scheduler"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 	"github.com/nanoinfraorg/skills-server/internal/web"
 )
 
@@ -65,6 +66,14 @@ func main() {
 		LLMModel:   cfg.LLMModel,
 	}
 
+	// vtClient stays nil -- and the whole VirusTotal integration stays
+	// off -- unless VIRUSTOTAL_API_KEY was actually set, exactly like the
+	// scan shield's optional LLM classification pass above.
+	var vtClient virustotal.Client
+	if cfg.VirusTotalAPIKey != "" {
+		vtClient = virustotal.NewClient(cfg.VirusTotalAPIKey)
+	}
+
 	// ctx is canceled on SIGINT/SIGTERM, giving the daily scan scheduler (a
 	// background goroutine with no other way to know the process is
 	// stopping) a clean way to stop its ticker loop.
@@ -98,6 +107,7 @@ func main() {
 		SubmitterEmails:   cfg.SubmitterEmails,
 		SessionTTL:        cfg.SessionTTL,
 		PublicBaseURL:     cfg.PublicBaseURL,
+		VirusTotalClient:  vtClient,
 	}
 
 	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
@@ -106,6 +116,18 @@ func main() {
 		PublishedDir: cfg.PublishedDir,
 		ScanConfig:   scanConfig,
 	})
+
+	// The VirusTotal background poller only runs when the integration is
+	// actually configured -- starting it with no client would just spin,
+	// finding pending rows that could never exist since nothing ever
+	// uploads without vtClient set.
+	if vtClient != nil {
+		go virustotal.Run(ctx, cfg.VirusTotalPollInterval, virustotal.Deps{
+			Store:  db,
+			Client: vtClient,
+			Logger: logger,
+		})
+	}
 
 	mux := api.NewMux(handler)
 	// The HTML UI (internal/web) is registered onto the same mux as the
@@ -126,7 +148,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("skills-server starting", "version", version, "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval, "public_base_url", cfg.PublicBaseURL)
+	logger.Info("skills-server starting", "version", version, "addr", server.Addr, "github_repo", cfg.GitHubRepo, "db_path", cfg.DBPath, "daily_scan_interval", cfg.DailyScanInterval, "public_base_url", cfg.PublicBaseURL, "virustotal_enabled", vtClient != nil)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", "error", err)

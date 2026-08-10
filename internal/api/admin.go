@@ -1,6 +1,8 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +17,7 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
+	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
 // ListSubmissions returns submissions, optionally filtered by
@@ -209,8 +212,63 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 		h.Logger.Error("attach scan to skill version", "error", err)
 	}
 
+	h.triggerVirusTotalUpload(sub.SkillID, files, skillVersionID)
+
 	h.Logger.Info("submission published", "id", id, "skill_id", sub.SkillID, "version", version, "scan_verdict", report.Verdict)
 	return &ApproveOutcome{Published: true, SkillID: sub.SkillID, Version: version, ScanVerdict: report.Verdict}, nil
+}
+
+// triggerVirusTotalUpload fires off a background VirusTotal upload for a
+// just-published skill version, if VirusTotal is configured
+// (h.VirusTotalClient is non-nil). It builds the archive to upload from
+// files -- the exact same already-validated, already-in-memory file
+// contents this same call to ApproveSubmissionCore already read via
+// pipeline.ReadFiles and just committed to GitHub -- rather than re-reading
+// sub.ArchivePath or the freshly-written PublishedDir copy from disk.
+//
+// The upload itself, and recording its result, happen entirely inside the
+// spawned goroutine (internal/virustotal.UploadAndRecord), using
+// context.Background() rather than the request's own context: the HTTP
+// request's context is canceled the moment the approve response is
+// written, but VirusTotal's upload (and the analysis it kicks off) has no
+// reason to be tied to how long that response took to send. This is what
+// keeps VirusTotal's latency -- or a full VirusTotal outage -- from ever
+// adding to the approve request's response time or from failing/rolling
+// back a publish that has already fully succeeded.
+func (h *Handler) triggerVirusTotalUpload(skillID string, files []pipeline.FileContent, skillVersionID int64) {
+	if h.VirusTotalClient == nil {
+		return
+	}
+	archive, err := buildArchiveZip(files)
+	if err != nil {
+		h.Logger.Warn("virustotal: build archive for upload", "error", err, "skill_id", skillID)
+		return
+	}
+	go virustotal.UploadAndRecord(context.Background(), h.VirusTotalClient, h.Store, h.Logger, h.now, skillVersionID, archive, skillID+".zip")
+}
+
+// buildArchiveZip re-zips already-read file contents into an in-memory
+// archive, entirely in a bytes.Buffer -- no temp file, no second disk read
+// of anything ApproveSubmissionCore already has in hand. Used only to build
+// the payload for a VirusTotal upload; the durable published archive copy
+// (PublishedDir/<skill_id>.zip) is still the original uploaded zip, written
+// by copyFile as it always was.
+func buildArchiveZip(files []pipeline.FileContent) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range files {
+		w, err := zw.Create(f.Path)
+		if err != nil {
+			return nil, fmt.Errorf("create zip entry %s: %w", f.Path, err)
+		}
+		if _, err := w.Write(f.Content); err != nil {
+			return nil, fmt.Errorf("write zip entry %s: %w", f.Path, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, fmt.Errorf("close zip writer: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // autoReject records a submission as auto-rejected with reason, returning
