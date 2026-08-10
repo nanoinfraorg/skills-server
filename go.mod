@@ -6,6 +6,7 @@ require (
 	github.com/VirusTotal/vt-go v1.1.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/google/uuid v1.6.0
+	github.com/yuin/goldmark v1.8.5
 	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.56.0
 )

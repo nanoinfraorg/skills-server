@@ -85,3 +85,24 @@ Judgment calls made where the spec left things open.
   (MIT) -- write semantic HTML, get a reasonably clean look, no utility
   classes or build step. Consistent with this project's existing
   no-outbound-dependency posture.
+- **`SKILL.md` Markdown preview: an opt-in second view, not a
+  replacement, and sanitized via goldmark's own extensibility rather than
+  a second dependency**: the skill detail page's default view of
+  `SKILL.md` stays the original plain-escaped-text `<pre>` block --
+  untrusted, third-party-submitted content shown to every unauthenticated
+  visitor is not something to pipe through a Markdown-to-HTML renderer by
+  default. `?view=preview` adds a second, explicitly-requested view
+  instead, rendered via [goldmark](https://github.com/yuin/goldmark) with
+  two things enforced together: raw HTML is never enabled
+  (`WithUnsafe()` is never set, so goldmark's own default of dropping raw
+  HTML blocks/inline HTML applies), and every link/image URL is checked
+  against an explicit `http`/`https`/`mailto` allowlist via a custom
+  `parser.ASTTransformer` (`internal/web/markdown.go`), not goldmark's own
+  narrower built-in scheme blocklist. A second dependency
+  (`github.com/microcosm-cc/bluemonday` or similar) for a post-render
+  HTML-sanitization pass was considered and rejected: goldmark's own
+  renderer/parser options already provide everything needed to enforce
+  the same property natively, without adding another non-stdlib package
+  to reason about (this project has otherwise stayed deliberately light
+  on those -- see the hand-rolled GitHub client above). See
+  [web-ui.md](web-ui.md) for the full mechanism.
