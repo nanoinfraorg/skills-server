@@ -1715,3 +1715,63 @@ func TestSkillDetail_RawViewUnaffectedByPreviewFeature(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDetail_PreviewView_StripsFrontmatterBeforeRendering confirms the
+// leading YAML frontmatter block never reaches goldmark: CommonMark has no
+// concept of it, so without stripFrontmatter the "---" delimiters parse as
+// a thematic break followed by a Setext heading, dumping the raw
+// "name: .../description: ..." lines into a stray <h2>. This is a
+// rendering-quality assertion, not a security one -- see
+// stripFrontmatter's doc comment in internal/web/markdown.go.
+func TestSkillDetail_PreviewView_StripsFrontmatterBeforeRendering(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "fm-strip",
+		skillMDWithBody("fm-strip", "# Real Heading\n\nReal body text.\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/fm-strip?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "description: Test skill") {
+		t.Errorf("expected the frontmatter's description line to be stripped, not rendered, body: %s", body)
+	}
+	if !strings.Contains(body, "<h1>Real Heading</h1>") {
+		t.Errorf("expected the real body heading to render as <h1>, body: %s", body)
+	}
+}
+
+// TestSkillDetail_ToggleLinksPointAtTheOtherView confirms the "raw|preview"
+// toggle actually lets a visitor switch views: whichever view is currently
+// active renders as inert text (not a link -- clicking it would be a
+// no-op), and the *other* view renders as a real link to switch to it. A
+// prior version of this template had the two branches swapped, so both
+// links pointed at the view already being shown and neither ever let a
+// visitor reach the other view.
+func TestSkillDetail_ToggleLinksPointAtTheOtherView(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "toggle-links", skillMDWithBody("toggle-links", "Body.\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/toggle-links", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "<span>raw</span>") {
+		t.Errorf("raw view: expected \"raw\" to render as inert (already active), body: %s", body)
+	}
+	if !strings.Contains(body, `<a href="?view=preview">preview</a>`) {
+		t.Errorf("raw view: expected a real link to switch to preview, body: %s", body)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/toggle-links?view=preview", nil))
+	body = rec.Body.String()
+	if !strings.Contains(body, `<a href="?view=raw">raw</a>`) {
+		t.Errorf("preview view: expected a real link to switch back to raw, body: %s", body)
+	}
+	if !strings.Contains(body, "<span>preview</span>") {
+		t.Errorf("preview view: expected \"preview\" to render as inert (already active), body: %s", body)
+	}
+}
