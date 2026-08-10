@@ -71,8 +71,17 @@
 {{end}}
 
 <h2>SKILL.md</h2>
+<p><small>
+  {{if .PreviewView}}<span>raw</span>{{else}}<a href="?view=raw">raw</a>{{end}}
+  |
+  {{if .PreviewView}}<a href="?view=preview">preview</a>{{else}}<span>preview</span>{{end}}
+</small></p>
 {{if .Content}}
-  <pre>{{.Content}}</pre>
+  {{if .PreviewView}}
+    <div class="skill-md-preview">{{.PreviewHTML}}</div>
+  {{else}}
+    <pre>{{.Content}}</pre>
+  {{end}}
 {{else}}
   <p><small>SKILL.md content is not available.</small></p>
 {{end}}

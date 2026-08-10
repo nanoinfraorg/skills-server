@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -90,12 +91,33 @@ type skillDetailPageData struct {
 	Skill    store.SkillDetail
 	Versions []store.SkillVersion
 	// Content is the current version's SKILL.md text, read straight out of
-	// the locally-archived zip copy (see skillMDAndFiles) and rendered
-	// verbatim in a <pre> block -- html/template auto-escapes it, so no
-	// Markdown rendering or sanitization step is needed or wanted (see
-	// docs/design-choices.md on why submitted content is never rendered as
-	// HTML). Empty if the archive couldn't be read.
+	// the locally-archived zip copy (see skillMDAndFiles). Rendered
+	// verbatim in a <pre> block by default ("raw" view) -- html/template
+	// auto-escapes it, so that view needs no Markdown rendering or
+	// sanitization step at all. An opt-in "preview" view (see PreviewView
+	// and PreviewHTML below, and docs/design-choices.md on why both exist)
+	// renders this same text as sanitized Markdown-to-HTML instead. Empty
+	// if the archive couldn't be read.
 	Content string
+	// PreviewView is true when the visitor asked for the Markdown-rendered
+	// "preview" view (?view=preview) rather than the default, always-safe
+	// "raw" view -- any other or missing ?view value leaves this false, so
+	// garbage input silently falls back to "raw" instead of erroring. Drives
+	// which of Content (raw) or PreviewHTML (rendered) skill_detail.html
+	// shows, and which of the "raw"/"preview" toggle links is the inert
+	// "currently active" one.
+	PreviewView bool
+	// PreviewHTML is Content rendered as sanitized HTML via
+	// renderMarkdownPreview (see internal/web/markdown.go for the actual
+	// safety mechanism: raw HTML is dropped, and every link/image URL is
+	// checked against an explicit scheme allowlist, before this is ever
+	// wrapped in template.HTML). Only computed when PreviewView is true --
+	// there's no reason to pay for a goldmark render on every single
+	// request to this page when the vast majority never ask for it. Empty
+	// otherwise, or if rendering failed (logged; the page falls back to
+	// showing nothing in the preview pane rather than erroring the whole
+	// page over a cosmetic feature).
+	PreviewHTML template.HTML
 	// Files lists every entry (path + size) in that same archive -- SKILL.md
 	// itself plus any scripts/references/assets -- so a visitor can see the
 	// skill's actual shape without downloading and unzipping it. Nil if the
@@ -265,11 +287,28 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		audits = append(audits, *vtAudit)
 	}
 
+	// ?view=preview opts into the Markdown-rendered view of SKILL.md;
+	// anything else (missing, "raw", or garbage) is the default, always-safe
+	// "raw" view -- see skillDetailPageData.PreviewView's doc comment. The
+	// goldmark render only happens when actually requested.
+	previewView := r.URL.Query().Get("view") == "preview"
+	var previewHTML template.HTML
+	if previewView && content != "" {
+		rendered, rerr := renderMarkdownPreview(content)
+		if rerr != nil {
+			h.Logger.Error("render markdown preview for skill detail page", "error", rerr, "skill_id", id)
+		} else {
+			previewHTML = rendered
+		}
+	}
+
 	h.render(w, http.StatusOK, "skill_detail.html", skillDetailPageData{
 		basePage:       basePage{Title: skill.DisplayName, User: navUser(sess)},
 		Skill:          *skill,
 		Versions:       versions,
 		Content:        content,
+		PreviewView:    previewView,
+		PreviewHTML:    previewHTML,
 		Files:          files,
 		SecurityAudits: audits,
 		RepoLink:       repoLink(h.API.GitHubRepo, skill.GitHubPath),

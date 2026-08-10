@@ -20,7 +20,7 @@ validation, publishing, scanning, or persistence.
 |---|---|---|
 | `GET /` | none | Home: "Sign in with Google" if signed out; a welcome + nav links if signed in. |
 | `GET /skills` | none | Public directory: `?q=...` searches (same as `GET /api/v1/search`); no query shows trending (same as `GET /api/v1/trending`). |
-| `GET /skills/{id}` | none | Detail + full version history (same as `GET /api/v1/skills/{id}` + `.../versions`), plus the current version's actual `SKILL.md` content and a flat listing of every file in its archive (read from the local `PublishedDir/<id>.zip` copy). A quarantined current version is shown, clearly marked, not hidden. A logged-in session sees an "Edit / submit new version" link to `/submit?skill_id=<id>`. |
+| `GET /skills/{id}` | none | Detail + full version history (same as `GET /api/v1/skills/{id}` + `.../versions`), plus the current version's actual `SKILL.md` content and a flat listing of every file in its archive (read from the local `PublishedDir/<id>.zip` copy). `SKILL.md` defaults to a plain escaped-text view; `?view=preview` opts into a sanitized Markdown-rendered view (see below). A quarantined current version is shown, clearly marked, not hidden. A logged-in session sees an "Edit / submit new version" link to `/submit?skill_id=<id>`. |
 | `GET /submit` | submitter or admin session | Submission form: `skill_id`, `display_name`, two optional "Skill Card" fields (`owner`, `risks` -- see below), and either a `.zip` file *or* a `SKILL.md` textarea (see below). There is no submitter field -- it's always the session's verified email. An optional `?skill_id=<id>` pre-fills the form with that skill's current display name, `owner`/`risks`, and `SKILL.md` content, and locks the `skill_id` field (readonly), for the "Edit / submit new version" link from the detail page. |
 | `POST /submit` | submitter or admin session, CSRF | Validates and creates the submission via `CreateSubmissionCore`. Redirects to `/my/submissions` on success; re-renders the form with the same inline error text the JSON API would return on failure. |
 | `GET /my/submissions` | any session | The session's own submissions and their status (`store.Store.ListSubmissionsBySubmitter`, added for this page). |
@@ -49,14 +49,70 @@ unchanged.
 serves) via `internal/pipeline`'s existing zip helpers (`ValidateArchive`
 for the entry listing, `ReadFiles` for content) and renders the current
 version's `SKILL.md` text plus a flat listing of every entry in the archive
-(`scripts/`, `references/`, `assets/`, whatever it contains). `SKILL.md` is
-rendered as plain escaped text inside a `<pre>` block -- `html/template`
-auto-escapes it by default -- deliberately *not* rendered as Markdown-to-HTML,
-since that would open an XSS surface on untrusted, third-party-submitted
-content for purely cosmetic benefit (see
-[design-choices.md](design-choices.md)). If the archive is missing or
-unreadable, the page still renders (metadata only) with a fallback message;
-this is logged as a warning, since every published skill should have one.
+(`scripts/`, `references/`, `assets/`, whatever it contains). If the archive
+is missing or unreadable, the page still renders (metadata only) with a
+fallback message; this is logged as a warning, since every published skill
+should have one.
+
+`SKILL.md` itself has two views, toggled by a `?view=` query parameter and a
+plain `raw | preview` text link pair directly under the "SKILL.md" heading
+(no JS -- just two links to the same URL with a different query string):
+
+- **`raw`** (`GET /skills/{id}` or `?view=raw`, the default): the exact
+  behavior this page has always had. The content is rendered as plain
+  escaped text inside a `<pre>` block -- `html/template` auto-escapes it by
+  default -- with no Markdown processing at all.
+- **`preview`** (`?view=preview`): the same content rendered as
+  Markdown-to-HTML via [goldmark](https://github.com/yuin/goldmark)
+  (`internal/web/markdown.go`'s `renderMarkdownPreview`), for a visitor who
+  wants to see it the way it'd look on GitHub instead of as a flat text
+  block.
+
+This *used* to be a settled "never render this as HTML" decision, precisely
+because `SKILL.md` is untrusted, third-party-submitted content shown to
+every unauthenticated visitor of a public page -- naively piping it through
+a Markdown renderer would be a straightforward stored-XSS hole. Adding the
+`preview` view without reopening that hole depends on two things both being
+true at once, not just "goldmark renders it":
+
+1. **Raw HTML is never passed through.** goldmark has a `WithUnsafe()`
+   renderer option that would make it emit raw HTML blocks and inline HTML
+   found in the Markdown source (a literal `<script>...</script>`, an
+   `<img onerror=...>`, etc.) verbatim. `renderMarkdownPreview` never sets
+   it. goldmark's own default (confirmed by reading
+   `renderer/html/html.go` directly, not assumed) is to drop raw HTML
+   entirely and write a `<!-- raw HTML omitted -->` comment in its place --
+   so a raw `<script>` block in a submitted `SKILL.md` never reaches the
+   response at all, not even escaped.
+2. **Every link/image URL is checked against an explicit scheme
+   allowlist.** Standard Markdown syntax alone -- `[text](url)`,
+   `![alt](url)`, no raw HTML involved -- can still produce a dangerous
+   `href`/`src` (`javascript:`, `data:`, ...) that (1) above doesn't touch.
+   goldmark's own default HTML renderer already blocks a handful of
+   specific dangerous schemes on its own, but that's a narrower blocklist
+   than this needs (it doesn't cover every non-http(s)/mailto scheme, and a
+   literal-prefix check like that one is themself bypassable by a URL with
+   an embedded tab/newline the way browsers parse it). `renderMarkdownPreview`
+   instead registers its own goldmark `parser.ASTTransformer`
+   (`schemeAllowlistTransformer`) that walks the parsed Markdown tree before
+   rendering and blanks the destination of every link/image whose scheme
+   isn't exactly `http`, `https`, or `mailto` -- after first stripping the
+   same control characters a browser's URL parser strips, so that trick
+   doesn't help. A blanked destination renders as an empty `href=""`/
+   `src=""`: present in the markup, but not a URL that navigates anywhere or
+   loads anything.
+
+Only once both of those have run is the resulting HTML string wrapped in
+`template.HTML` (which is what tells `html/template` *not* to auto-escape
+it) -- see `internal/web/markdown.go` for the whole thing kept in one
+function so it's auditable in one read, and `internal/web/web_test.go` for
+tests that submit actual attack payloads (`<script>`, an `onerror` handler,
+`javascript:`/`data:` URLs) through `?view=preview` and assert none of them
+reach the response in an executable form, alongside a test that legitimate
+Markdown (headings, lists, fenced code, a real `https://` link) really does
+render as HTML. See [design-choices.md](design-choices.md) for why an AST
+transformer was chosen over a second, post-render HTML-sanitizer
+dependency.
 
 ## Skill Card
 

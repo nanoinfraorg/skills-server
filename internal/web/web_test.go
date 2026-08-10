@@ -1517,3 +1517,201 @@ func TestSkillDetail_SkillCardOmitsOwnerAndRisksRowsWhenUnset(t *testing.T) {
 		t.Errorf("expected no Risks row when unset, body: %s", body)
 	}
 }
+
+// seedPublishedSkillWithMD publishes a skill under skillID whose SKILL.md
+// body (after valid frontmatter) is exactly md -- used by the "raw"/"preview"
+// toggle tests below, which need full control over the SKILL.md body's
+// Markdown content rather than the fixed fixtures skillMDFor/testValidSkillMD
+// provide.
+func seedPublishedSkillWithMD(t *testing.T, apiHandler *api.Handler, skillID, md string) {
+	t.Helper()
+	ctx := context.Background()
+	archiveBytes := buildZip(t, map[string]string{"SKILL.md": md})
+	if err := os.WriteFile(filepath.Join(apiHandler.PublishedDir, skillID+".zip"), archiveBytes, 0o644); err != nil {
+		t.Fatalf("seed published archive: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: skillID, Version: 1, SubmissionID: "seed-" + skillID, DisplayName: skillID,
+		Description: "preview toggle test fixture", GitHubPath: skillID + "/", PublishedAt: time.Now(),
+		Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, skillID, 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+}
+
+// skillMDWithBody builds a minimal, valid SKILL.md (matching skillMDFor's
+// frontmatter shape) whose body is exactly body -- used to control the
+// preview-rendered Markdown precisely instead of the fixed body
+// skillMDFor's own template hardcodes.
+func skillMDWithBody(skillID, body string) string {
+	return "---\nname: " + skillID + "\ndescription: Test skill " + skillID + ".\n---\n\n" + body
+}
+
+// TestSkillDetail_PreviewView_DropsRawScriptBlock is the first of several
+// tests proving the "preview" view (?view=preview) can safely render
+// untrusted, third-party-submitted SKILL.md content: a literal <script>
+// block in the Markdown source must never reach the response as a live,
+// executable <script> tag. This is the actual security property this
+// feature depends on, not just that goldmark "works" -- see
+// internal/web/markdown.go's renderMarkdownPreview for the mechanism
+// (goldmark's default of dropping raw HTML, confirmed by reading goldmark's
+// own source, not assumed).
+func TestSkillDetail_PreviewView_DropsRawScriptBlock(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "xss-script",
+		skillMDWithBody("xss-script", "<script>alert(1)</script>\n\nSome text after.\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/xss-script?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Errorf("expected no live <script> tag in the preview response, body: %s", body)
+	}
+	if !strings.Contains(body, "Some text after.") {
+		t.Errorf("expected the rest of the Markdown to still render, body: %s", body)
+	}
+}
+
+// TestSkillDetail_PreviewView_NeutralizesInlineEventHandler confirms an
+// inline raw HTML tag carrying a JS event handler (no <script> element at
+// all) is likewise neutralized -- goldmark drops raw inline HTML the same
+// way it drops raw HTML blocks, by default, without WithUnsafe().
+func TestSkillDetail_PreviewView_NeutralizesInlineEventHandler(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "xss-imgevent",
+		skillMDWithBody("xss-imgevent", `before <img src=x onerror="alert(1)"> after`+"\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/xss-imgevent?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "onerror") {
+		t.Errorf("expected onerror to never reach the response, body: %s", body)
+	}
+	if strings.Contains(body, "<img src=x") {
+		t.Errorf("expected the raw <img> tag to never reach the response unneutralized, body: %s", body)
+	}
+}
+
+// TestSkillDetail_PreviewView_NeutralizesJavascriptLink confirms a
+// perfectly ordinary CommonMark link -- [text](url), no raw HTML involved
+// -- whose URL is a javascript: scheme is still neutralized: the URL
+// allowlist in internal/web/markdown.go, not just goldmark's own dropping
+// of raw HTML, is what has to catch this case.
+func TestSkillDetail_PreviewView_NeutralizesJavascriptLink(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "xss-link",
+		skillMDWithBody("xss-link", "[click me](javascript:alert(document.cookie))\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/xss-link?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "javascript:") {
+		t.Errorf("expected no javascript: URL anywhere in the response, body: %s", body)
+	}
+	if !strings.Contains(body, "click me") {
+		t.Errorf("expected the link's visible text to still render, body: %s", body)
+	}
+}
+
+// TestSkillDetail_PreviewView_NeutralizesDangerousImageURL is the image
+// counterpart of the javascript: link test above, covering both a
+// javascript: and a data: image URL -- CommonMark's ![alt](url) syntax,
+// no raw HTML.
+func TestSkillDetail_PreviewView_NeutralizesDangerousImageURL(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "xss-image",
+		skillMDWithBody("xss-image",
+			"![js](javascript:alert(1))\n\n![data](data:text/html,<script>alert(1)</script>)\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/xss-image?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "javascript:") {
+		t.Errorf("expected no javascript: URL anywhere in the response, body: %s", body)
+	}
+	if strings.Contains(body, "data:text/html") {
+		t.Errorf("expected no data: URL anywhere in the response, body: %s", body)
+	}
+	if strings.Contains(body, "<script>") {
+		t.Errorf("expected no live <script> tag smuggled in via a data: URL, body: %s", body)
+	}
+}
+
+// TestSkillDetail_PreviewView_RendersLegitimateMarkdown is the "prove the
+// feature actually works, not just that it's maximally defensive" half of
+// this test suite: an ordinary, harmless SKILL.md body -- a heading, a
+// list, a fenced code block, and a real https:// link -- must render as
+// real HTML in preview mode, not just survive without an XSS payload.
+func TestSkillDetail_PreviewView_RendersLegitimateMarkdown(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	seedPublishedSkillWithMD(t, apiHandler, "legit-preview", skillMDWithBody("legit-preview",
+		"## Usage\n\n- step one\n- step two\n\n```bash\necho hi\n```\n\nSee [the docs](https://example.com/docs).\n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/legit-preview?view=preview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h2>Usage</h2>", "<li>step one</li>", "<pre><code", `<a href="https://example.com/docs">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected preview HTML to contain %q, body: %s", want, body)
+		}
+	}
+}
+
+// TestSkillDetail_RawViewUnaffectedByPreviewFeature confirms both the
+// explicit ?view=raw view and the no-?view-at-all default are completely
+// unaffected by any of the above: still the exact plain-escaped-text <pre>
+// block this page has always rendered, even for a body containing exactly
+// the same payloads exercised above -- the "preview" feature is opt-in, and
+// getting the default wrong would defeat that entirely.
+func TestSkillDetail_RawViewUnaffectedByPreviewFeature(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	payloadMD := skillMDWithBody("raw-unaffected", "<script>alert(1)</script>\n\n[x](javascript:alert(1))\n")
+	seedPublishedSkillWithMD(t, apiHandler, "raw-unaffected", payloadMD)
+
+	for _, path := range []string{"/skills/raw-unaffected", "/skills/raw-unaffected?view=raw", "/skills/raw-unaffected?view=garbage"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200, body: %s", path, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		// html/template's default auto-escaping renders the literal
+		// "<script>" as "&lt;script&gt;" inside the <pre> block -- exactly
+		// the same as before this feature existed.
+		if strings.Contains(body, "<script>alert(1)</script>") {
+			t.Errorf("%s: expected the raw view to auto-escape the payload, not pass it through, body: %s", path, body)
+		}
+		if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+			t.Errorf("%s: expected the escaped payload text inside the <pre> block, body: %s", path, body)
+		}
+		if !strings.Contains(body, "<pre>") {
+			t.Errorf("%s: expected the plain <pre> block, body: %s", path, body)
+		}
+	}
+}
