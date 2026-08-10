@@ -112,6 +112,53 @@ func renderMarkdownPreview(source string) (template.HTML, error) {
 	return template.HTML(buf.String()), nil //nolint:gosec // deliberate: see doc comment above
 }
 
+// stripFrontmatter removes a leading YAML frontmatter block (a "---" line,
+// then any number of lines, then a closing "---" line) from a SKILL.md
+// body before it's handed to renderMarkdownPreview. CommonMark has no
+// concept of YAML frontmatter -- goldmark parses the opening "---" as a
+// thematic break and the "key: value" line right after it, followed by
+// the closing "---", as a Setext-style heading (text underlined with
+// "---" is an <h2> in CommonMark), so without this the frontmatter block
+// renders as a stray <hr> followed by an ugly heading containing the raw
+// "name: ..." / "description: ..." lines. This is purely a rendering
+// nicety, not a safety mechanism -- unlike renderMarkdownPreview, getting
+// this wrong just looks bad, it doesn't reopen an XSS hole.
+//
+// Deliberately tolerant rather than strict: pipeline.ParseFrontmatter
+// (used at submission time) requires well-formed frontmatter and errors
+// otherwise, but by the time content reaches this page the archive has
+// already been validated and published, and if some future edge case
+// slips through anyway, this just leaves the whole content unchanged and
+// lets it render as its own (still safe) Markdown rather than erroring
+// the page over a cosmetic step.
+func stripFrontmatter(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+	rest := content[3:]
+	if idx := strings.IndexByte(rest, '\n'); idx == -1 || strings.TrimSpace(rest[:idx]) != "" {
+		return content // "---" wasn't alone on the first line
+	} else {
+		rest = rest[idx+1:]
+	}
+	closing := strings.Index(rest, "\n---")
+	if closing == -1 {
+		return content
+	}
+	afterClose := rest[closing+len("\n---"):]
+	if nl := strings.IndexByte(afterClose, '\n'); nl != -1 {
+		if strings.TrimSpace(afterClose[:nl]) != "" {
+			return content // closing delimiter line has trailing junk
+		}
+		return strings.TrimLeft(afterClose[nl+1:], "\n")
+	}
+	// Closing "---" is the last line, nothing after it.
+	if strings.TrimSpace(afterClose) != "" {
+		return content
+	}
+	return ""
+}
+
 // allowedURLSchemes is the explicit allowlist enforced by
 // schemeAllowlistTransformer: only these three schemes are ever allowed
 // through as a link href or image src in rendered Markdown preview

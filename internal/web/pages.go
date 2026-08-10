@@ -294,7 +294,7 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 	previewView := r.URL.Query().Get("view") == "preview"
 	var previewHTML template.HTML
 	if previewView && content != "" {
-		rendered, rerr := renderMarkdownPreview(content)
+		rendered, rerr := renderMarkdownPreview(stripFrontmatter(content))
 		if rerr != nil {
 			h.Logger.Error("render markdown preview for skill detail page", "error", rerr, "skill_id", id)
 		} else {

@@ -72,9 +72,9 @@
 
 <h2>SKILL.md</h2>
 <p><small>
-  {{if .PreviewView}}<span>raw</span>{{else}}<a href="?view=raw">raw</a>{{end}}
+  {{if .PreviewView}}<a href="?view=raw">raw</a>{{else}}<span>raw</span>{{end}}
   |
-  {{if .PreviewView}}<a href="?view=preview">preview</a>{{else}}<span>preview</span>{{end}}
+  {{if .PreviewView}}<span>preview</span>{{else}}<a href="?view=preview">preview</a>{{end}}
 </small></p>
 {{if .Content}}
   {{if .PreviewView}}
