@@ -15,6 +15,7 @@ import (
 
 	"github.com/nanoinfraorg/skills-server/internal/api"
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
+	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
 
@@ -99,6 +100,46 @@ type skillDetailPageData struct {
 	// skill's actual shape without downloading and unzipping it. Nil if the
 	// archive couldn't be read.
 	Files []pipeline.Entry
+	// SecurityAudits lists every named security check run against this
+	// version, each with a PASS/WARN/FAIL/PENDING-style status -- currently
+	// just our own scan shield ("NanoInfra Scanner"), structured as a slice
+	// so a future third-party check (e.g. VirusTotal) can be added as a
+	// second entry without changing this shape. Empty if no scan has run
+	// yet for this version (shouldn't happen for a real published version,
+	// but isn't fatal to the page if it does).
+	SecurityAudits []securityAudit
+}
+
+// securityAudit is one named security check's result, for the detail
+// page's "Security Audits" panel.
+type securityAudit struct {
+	Name string
+	// Status is "pass", "warn", "fail", or "pending" -- drives the badge's
+	// color in skill_detail.html.
+	Status string
+	Detail string
+}
+
+// nanoinfraScannerAudit maps our own scan shield's verdict (see
+// internal/scan.ComputeVerdict) to the detail page's badge vocabulary.
+// "flagged" (an LLM-only, informational finding -- see scan.ComputeVerdict's
+// doc comment on why that verdict can never come from the deterministic
+// checks alone) maps to "warn", not "fail": it's exactly the same
+// human-review distinction the scan shield itself already draws.
+func nanoinfraScannerAudit(sc *store.Scan) securityAudit {
+	if sc == nil {
+		return securityAudit{Name: "NanoInfra Scanner", Status: "pending", Detail: "not yet scanned"}
+	}
+	switch sc.Verdict {
+	case store.ScanVerdict(scan.VerdictPass):
+		return securityAudit{Name: "NanoInfra Scanner", Status: "pass", Detail: "no issues found"}
+	case store.ScanVerdict(scan.VerdictFlagged):
+		return securityAudit{Name: "NanoInfra Scanner", Status: "warn", Detail: "flagged for human review"}
+	case store.ScanVerdict(scan.VerdictBlocked):
+		return securityAudit{Name: "NanoInfra Scanner", Status: "fail", Detail: "blocked, quarantined"}
+	default:
+		return securityAudit{Name: "NanoInfra Scanner", Status: "pending", Detail: string(sc.Verdict)}
+	}
 }
 
 // SkillDetail renders "/skills/{id}": the current version's description,
@@ -140,12 +181,30 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Warn("load skill contents for detail page", "error", err, "skill_id", id)
 	}
 
+	// The current version's row id (not its user-facing version number) is
+	// what scans.target_id actually stores for a ScanTargetSkillVersion row
+	// -- find it in the already-fetched version history rather than an
+	// extra store round trip.
+	var currentScan *store.Scan
+	for _, v := range versions {
+		if v.Version == skill.Version {
+			sc, scanErr := h.API.Store.GetLatestScan(r.Context(), store.ScanTargetSkillVersion, api.ScanIDString(v.ID))
+			if scanErr == nil {
+				currentScan = sc
+			} else if !errors.Is(scanErr, store.ErrNotFound) {
+				h.Logger.Error("get latest scan for skill detail page", "error", scanErr, "skill_id", id)
+			}
+			break
+		}
+	}
+
 	h.render(w, http.StatusOK, "skill_detail.html", skillDetailPageData{
-		basePage: basePage{Title: skill.DisplayName, User: navUser(sess)},
-		Skill:    *skill,
-		Versions: versions,
-		Content:  content,
-		Files:    files,
+		basePage:       basePage{Title: skill.DisplayName, User: navUser(sess)},
+		Skill:          *skill,
+		Versions:       versions,
+		Content:        content,
+		Files:          files,
+		SecurityAudits: []securityAudit{nanoinfraScannerAudit(currentScan)},
 	})
 }
 

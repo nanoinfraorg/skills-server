@@ -195,8 +195,10 @@ func toScanDTOFromReport(report scan.Report, sc store.Scan) scanDTO {
 	return dto
 }
 
-// scanIDString formats a skill_versions row id as the string form used as
-// scans.target_id for ScanTargetSkillVersion rows.
-func scanIDString(id int64) string {
+// ScanIDString formats a skill_versions row id as the string form used as
+// scans.target_id for ScanTargetSkillVersion rows. Exported so
+// internal/web can look up the same scan row this package already reads
+// for the JSON API's GET /api/v1/skills/{id}/versions/{version}.
+func ScanIDString(id int64) string {
 	return strconv.FormatInt(id, 10)
 }

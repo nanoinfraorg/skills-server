@@ -202,7 +202,7 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 	// Attach the same scan result to the new skill version, so it's
 	// queryable via GET /api/v1/skills/{id}/versions/{version} without a
 	// second scan run.
-	versionScanRow, err := scan.BuildScanRow(report, store.ScanTargetSkillVersion, scanIDString(skillVersionID), trigger, h.now())
+	versionScanRow, err := scan.BuildScanRow(report, store.ScanTargetSkillVersion, ScanIDString(skillVersionID), trigger, h.now())
 	if err != nil {
 		h.Logger.Error("build skill-version scan row", "error", err)
 	} else if _, err := h.Store.CreateScan(ctx, versionScanRow); err != nil {

@@ -15,6 +15,28 @@
 <p>{{.Skill.Description}}</p>
 <p><small>{{.Skill.Downloads}} download{{if ne .Skill.Downloads 1}}s{{end}} &middot; published {{.Skill.PublishedAt.Format "2006-01-02"}}</small></p>
 
+<h2>Security Audits</h2>
+{{if .SecurityAudits}}
+  <ul>
+  {{range .SecurityAudits}}
+    <li>
+      {{.Name}}
+      {{if eq .Status "pass"}}
+        <mark style="background: #1a7f37; color: #fff;" title="{{.Detail}}">PASS</mark>
+      {{else if eq .Status "warn"}}
+        <mark style="background: #b45309; color: #fff;" title="{{.Detail}}">WARN</mark>
+      {{else if eq .Status "fail"}}
+        <mark style="background: #b91c1c; color: #fff;" title="{{.Detail}}">FAIL</mark>
+      {{else}}
+        <mark style="background: var(--pico-muted-color); color: #fff;" title="{{.Detail}}">PENDING</mark>
+      {{end}}
+    </li>
+  {{end}}
+  </ul>
+{{else}}
+  <p><small>No security audits recorded yet.</small></p>
+{{end}}
+
 <h2>Version history</h2>
 <table>
   <thead><tr><th>Version</th><th>Published</th><th>Status</th></tr></thead>
