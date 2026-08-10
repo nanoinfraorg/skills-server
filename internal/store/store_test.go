@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -659,4 +660,223 @@ func TestRoleSatisfies(t *testing.T) {
 			t.Errorf("RoleSatisfies(%s, %s) = %v, want %v", c.have, c.need, got, c.want)
 		}
 	}
+}
+
+// TestSubmissionOwnerAndRisksPersist confirms the optional Owner/Risks
+// fields round-trip through CreateSubmission/GetSubmission/ListSubmissions
+// -- both when set and when left as the zero value (empty string), which is
+// the "not provided" state, not an error.
+func TestSubmissionOwnerAndRisksPersist(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateSubmission(ctx, Submission{
+		ID: "sub-with", SkillID: "my-skill", DisplayName: "My Skill", Submitter: "alice",
+		Status: StatusPending, ArchivePath: "/tmp/sub-with.zip", CreatedAt: time.Now(),
+		Owner: "Platform Team", Risks: "Runs shell commands; review before granting broad permissions.",
+	}); err != nil {
+		t.Fatalf("create submission with owner/risks: %v", err)
+	}
+	if err := s.CreateSubmission(ctx, Submission{
+		ID: "sub-without", SkillID: "other-skill", DisplayName: "Other Skill", Submitter: "bob",
+		Status: StatusPending, ArchivePath: "/tmp/sub-without.zip", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create submission without owner/risks: %v", err)
+	}
+
+	got, err := s.GetSubmission(ctx, "sub-with")
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	if got.Owner != "Platform Team" {
+		t.Errorf("owner = %q, want Platform Team", got.Owner)
+	}
+	if got.Risks != "Runs shell commands; review before granting broad permissions." {
+		t.Errorf("risks = %q", got.Risks)
+	}
+
+	gotWithout, err := s.GetSubmission(ctx, "sub-without")
+	if err != nil {
+		t.Fatalf("get submission without owner/risks: %v", err)
+	}
+	if gotWithout.Owner != "" || gotWithout.Risks != "" {
+		t.Errorf("expected empty owner/risks, got owner=%q risks=%q", gotWithout.Owner, gotWithout.Risks)
+	}
+
+	list, err := s.ListSubmissions(ctx, "")
+	if err != nil {
+		t.Fatalf("list submissions: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 submissions, got %d", len(list))
+	}
+	for _, sub := range list {
+		if sub.ID == "sub-with" && sub.Owner != "Platform Team" {
+			t.Errorf("listed submission owner = %q, want Platform Team", sub.Owner)
+		}
+	}
+}
+
+// TestSkillVersionOwnerAndRisksPersist confirms the optional Owner/Risks
+// fields round-trip through CreateSkillVersion/GetSkillVersion/
+// ListSkillVersions/GetSkillDetail -- the same fields, carried forward at
+// publish time from the submission that produced this version.
+func TestSkillVersionOwnerAndRisksPersist(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateSkillVersion(ctx, SkillVersion{
+		SkillID: "card-skill", Version: 1, SubmissionID: "sub-card", DisplayName: "Card Skill",
+		Description: "Has a skill card.", GitHubPath: "card-skill/", PublishedAt: time.Now(), Status: SkillVersionPublished,
+		Owner: "Security Guild", Risks: "Could exfiltrate data if misconfigured.",
+	}); err != nil {
+		t.Fatalf("create skill version: %v", err)
+	}
+	if err := s.SetSkillPointer(ctx, "card-skill", 1, time.Now()); err != nil {
+		t.Fatalf("set skill pointer: %v", err)
+	}
+
+	sv, err := s.GetSkillVersion(ctx, "card-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version: %v", err)
+	}
+	if sv.Owner != "Security Guild" || sv.Risks != "Could exfiltrate data if misconfigured." {
+		t.Errorf("unexpected skill version: %+v", sv)
+	}
+
+	versions, err := s.ListSkillVersions(ctx, "card-skill")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list skill versions: err=%v versions=%+v", err, versions)
+	}
+	if versions[0].Owner != "Security Guild" {
+		t.Errorf("listed version owner = %q, want Security Guild", versions[0].Owner)
+	}
+
+	detail, err := s.GetSkillDetail(ctx, "card-skill")
+	if err != nil {
+		t.Fatalf("get skill detail: %v", err)
+	}
+	if detail.Owner != "Security Guild" || detail.Risks != "Could exfiltrate data if misconfigured." {
+		t.Errorf("unexpected skill detail: %+v", detail)
+	}
+
+	// A version that never sets Owner/Risks must round-trip as empty
+	// strings, not an error -- both fields are optional everywhere.
+	if _, err := s.CreateSkillVersion(ctx, SkillVersion{
+		SkillID: "no-card-skill", Version: 1, SubmissionID: "sub-no-card", DisplayName: "No Card Skill",
+		Description: "No skill card fields.", GitHubPath: "no-card-skill/", PublishedAt: time.Now(), Status: SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("create skill version without owner/risks: %v", err)
+	}
+	svNoCard, err := s.GetSkillVersion(ctx, "no-card-skill", 1)
+	if err != nil {
+		t.Fatalf("get skill version without owner/risks: %v", err)
+	}
+	if svNoCard.Owner != "" || svNoCard.Risks != "" {
+		t.Errorf("expected empty owner/risks, got owner=%q risks=%q", svNoCard.Owner, svNoCard.Risks)
+	}
+}
+
+// TestOwnerRisksMigration_AppliesToPreExistingDatabase confirms
+// ownerRisksMigrations lets an existing database file -- created by a
+// pre-Skill-Card version of this schema, whose submissions/skill_versions
+// tables predate the owner/risks columns -- open successfully and pick up
+// both columns without losing any pre-existing data. This is the scenario
+// sessionsCSRFMigration already handles for the sessions table; this test
+// exercises the same idempotent-ALTER pattern for the two new columns on
+// two different tables.
+func TestOwnerRisksMigration_AppliesToPreExistingDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Build a database with the pre-Skill-Card schema: submissions and
+	// skill_versions exactly as they existed before owner/risks were added,
+	// with one pre-existing row in each so the migration's "backfill
+	// doesn't lose data" property is actually exercised.
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE submissions (
+			id               TEXT PRIMARY KEY,
+			skill_id         TEXT NOT NULL,
+			display_name     TEXT NOT NULL,
+			submitter        TEXT NOT NULL,
+			status           TEXT NOT NULL,
+			rejection_reason TEXT,
+			archive_path     TEXT NOT NULL,
+			created_at       TEXT NOT NULL,
+			decided_at       TEXT
+		);
+		CREATE TABLE skill_versions (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			skill_id      TEXT NOT NULL,
+			version       INTEGER NOT NULL,
+			submission_id TEXT NOT NULL,
+			display_name  TEXT NOT NULL,
+			description   TEXT NOT NULL,
+			github_path   TEXT NOT NULL,
+			published_at  TEXT NOT NULL,
+			status        TEXT NOT NULL,
+			search_text   TEXT NOT NULL,
+			UNIQUE (skill_id, version)
+		);
+	`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		INSERT INTO submissions (id, skill_id, display_name, submitter, status, archive_path, created_at)
+		VALUES ('legacy-sub', 'legacy-skill', 'Legacy Skill', 'carol', 'approved', '/tmp/legacy.zip', ?)`,
+		formatTime(time.Now())); err != nil {
+		t.Fatalf("seed legacy submission: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		INSERT INTO skill_versions (skill_id, version, submission_id, display_name, description, github_path, published_at, status, search_text)
+		VALUES ('legacy-skill', 1, 'legacy-sub', 'Legacy Skill', 'predates the skill card', 'legacy-skill/', ?, 'published', 'legacy')`,
+		formatTime(time.Now())); err != nil {
+		t.Fatalf("seed legacy skill version: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	// Now open it through the real Store.Open, exactly as upgrading a
+	// running server to this version would.
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open legacy database with current schema: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	sub, err := s.GetSubmission(ctx, "legacy-sub")
+	if err != nil {
+		t.Fatalf("get pre-existing submission after migration: %v", err)
+	}
+	if sub.DisplayName != "Legacy Skill" {
+		t.Errorf("pre-existing data lost: display_name = %q", sub.DisplayName)
+	}
+	if sub.Owner != "" || sub.Risks != "" {
+		t.Errorf("expected migrated owner/risks to default to empty, got owner=%q risks=%q", sub.Owner, sub.Risks)
+	}
+
+	sv, err := s.GetSkillVersion(ctx, "legacy-skill", 1)
+	if err != nil {
+		t.Fatalf("get pre-existing skill version after migration: %v", err)
+	}
+	if sv.Description != "predates the skill card" {
+		t.Errorf("pre-existing data lost: description = %q", sv.Description)
+	}
+	if sv.Owner != "" || sv.Risks != "" {
+		t.Errorf("expected migrated owner/risks to default to empty, got owner=%q risks=%q", sv.Owner, sv.Risks)
+	}
+
+	// The migration must also be safe to run again (e.g. a second restart
+	// against the now-current-schema database) -- Open already does this on
+	// every startup, so simply opening it again is the test.
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-open already-migrated database: %v", err)
+	}
+	s2.Close()
 }

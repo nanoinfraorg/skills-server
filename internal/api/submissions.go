@@ -40,7 +40,13 @@ type SubmissionInput struct {
 	SkillID     string
 	DisplayName string
 	Submitter   string
-	Archive     io.Reader
+	// Owner and Risks are optional, submitter-provided free text for the
+	// "Skill Card" governance fields (who's accountable for this skill, and
+	// what could go wrong plus how that's mitigated). Empty means "not
+	// provided" -- neither is validated as required.
+	Owner   string
+	Risks   string
+	Archive io.Reader
 }
 
 // CreateSubmission accepts a new skill submission: a multipart form with a
@@ -65,6 +71,8 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 	skillID := strings.TrimSpace(r.FormValue("skill_id"))
 	displayName := strings.TrimSpace(r.FormValue("display_name"))
 	submitter := strings.TrimSpace(r.FormValue("submitter"))
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	risks := strings.TrimSpace(r.FormValue("risks"))
 
 	// A request authenticated via a Google OAuth session (rather than the
 	// shared X-Submitter-Token) has a real, verified identity -- it always
@@ -85,6 +93,8 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 		SkillID:     skillID,
 		DisplayName: displayName,
 		Submitter:   submitter,
+		Owner:       owner,
+		Risks:       risks,
 		Archive:     file,
 	})
 	if subErr != nil {
@@ -131,6 +141,8 @@ func (h *Handler) CreateSubmissionCore(ctx context.Context, in SubmissionInput) 
 		Status:      store.StatusPending,
 		ArchivePath: archivePath,
 		CreatedAt:   h.now(),
+		Owner:       in.Owner,
+		Risks:       in.Risks,
 	}
 	if err := h.Store.CreateSubmission(ctx, sub); err != nil {
 		_ = os.Remove(archivePath)

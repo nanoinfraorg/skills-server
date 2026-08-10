@@ -30,6 +30,8 @@ type submissionDTO struct {
 	RejectionReason *string `json:"rejection_reason,omitempty"`
 	CreatedAt       string  `json:"created_at"`
 	DecidedAt       *string `json:"decided_at,omitempty"`
+	Owner           string  `json:"owner,omitempty"`
+	Risks           string  `json:"risks,omitempty"`
 }
 
 func toSubmissionDTO(s store.Submission) submissionDTO {
@@ -41,6 +43,8 @@ func toSubmissionDTO(s store.Submission) submissionDTO {
 		Status:          string(s.Status),
 		RejectionReason: s.RejectionReason,
 		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
+		Owner:           s.Owner,
+		Risks:           s.Risks,
 	}
 	if s.DecidedAt != nil {
 		formatted := s.DecidedAt.UTC().Format(time.RFC3339)
@@ -126,6 +130,8 @@ type skillVersionDetailDTO struct {
 	PublishedAt  string   `json:"published_at"`
 	Status       string   `json:"status"`
 	Scan         *scanDTO `json:"scan,omitempty"`
+	Owner        string   `json:"owner,omitempty"`
+	Risks        string   `json:"risks,omitempty"`
 }
 
 func toSkillVersionDetailDTO(sv store.SkillVersion, latestScan *scanDTO) skillVersionDetailDTO {
@@ -140,6 +146,8 @@ func toSkillVersionDetailDTO(sv store.SkillVersion, latestScan *scanDTO) skillVe
 		PublishedAt:  sv.PublishedAt.UTC().Format(time.RFC3339),
 		Status:       string(sv.Status),
 		Scan:         latestScan,
+		Owner:        sv.Owner,
+		Risks:        sv.Risks,
 	}
 }
 

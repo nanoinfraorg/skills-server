@@ -1270,3 +1270,191 @@ func TestStaticAssets_PicoCSSServed(t *testing.T) {
 		t.Errorf("expected a substantial CSS file, got %d bytes", rec.Body.Len())
 	}
 }
+
+// TestSubmitCreate_OwnerAndRisksPersisted confirms the two optional "Skill
+// Card" form fields (owner, risks) are threaded through SubmitCreate into
+// the stored submission -- optional means the same successful-submission
+// path as every other field, not a separate code path.
+func TestSubmitCreate_OwnerAndRisksPersisted(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "carder@example.com", store.SessionRoleSubmitter, "csrf-card")
+
+	archive := buildZip(t, map[string]string{"SKILL.md": skillMDFor("card-skill")})
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "card-skill", "display_name": "Card Skill", "csrf_token": "csrf-card",
+		"owner": "Platform Team", "risks": "Runs shell commands; review scripts/ first.",
+	}, archive)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303, body: %s", rec.Code, rec.Body.String())
+	}
+
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "carder@example.com")
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("expected 1 stored submission, err=%v subs=%+v", err, subs)
+	}
+	if subs[0].Owner != "Platform Team" {
+		t.Errorf("owner = %q, want Platform Team", subs[0].Owner)
+	}
+	if subs[0].Risks != "Runs shell commands; review scripts/ first." {
+		t.Errorf("risks = %q", subs[0].Risks)
+	}
+}
+
+// TestSubmitCreate_OwnerAndRisksOmittedStillSucceeds confirms leaving both
+// fields blank is a completely normal, successful submission -- neither is
+// validated as required.
+func TestSubmitCreate_OwnerAndRisksOmittedStillSucceeds(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	cookie := seedSession(t, apiHandler, "nocard@example.com", store.SessionRoleSubmitter, "csrf-nocard")
+
+	archive := buildZip(t, map[string]string{"SKILL.md": skillMDFor("no-card-skill")})
+	req := submitFormRequest(t, cookie, map[string]string{
+		"skill_id": "no-card-skill", "display_name": "No Card Skill", "csrf_token": "csrf-nocard",
+	}, archive)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303, body: %s", rec.Code, rec.Body.String())
+	}
+
+	subs, err := apiHandler.Store.ListSubmissionsBySubmitter(context.Background(), "nocard@example.com")
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("expected 1 stored submission, err=%v subs=%+v", err, subs)
+	}
+	if subs[0].Owner != "" || subs[0].Risks != "" {
+		t.Errorf("expected empty owner/risks when omitted, got owner=%q risks=%q", subs[0].Owner, subs[0].Risks)
+	}
+}
+
+// TestSubmitForm_EditPrefillIncludesOwnerAndRisks extends the edit-prefill
+// flow (see TestSubmitForm_EditPrefillPopulatesCurrentContent) to confirm
+// the current version's Owner/Risks values are pre-filled into the form's
+// "owner" input and "risks" textarea, exactly like display_name/skill_md
+// already are.
+func TestSubmitForm_EditPrefillIncludesOwnerAndRisks(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	skillMD := skillMDFor("zeta")
+	archiveBytes := buildZip(t, map[string]string{"SKILL.md": skillMD})
+	if err := os.WriteFile(filepath.Join(apiHandler.PublishedDir, "zeta.zip"), archiveBytes, 0o644); err != nil {
+		t.Fatalf("seed published archive: %v", err)
+	}
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "zeta", Version: 1, SubmissionID: "seed-zeta", DisplayName: "Zeta",
+		Description: "Test skill zeta.", GitHubPath: "zeta/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+		Owner: "Zeta Team", Risks: "Talks to an external API; rate-limited server-side.",
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "zeta", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	cookie := seedSession(t, apiHandler, "zeta-editor@example.com", store.SessionRoleSubmitter, "csrf-zeta")
+	req := httptest.NewRequest(http.MethodGet, "/submit?skill_id=zeta", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `value="Zeta Team"`) {
+		t.Errorf("expected the owner field pre-filled with Zeta Team, body: %s", body)
+	}
+	if !strings.Contains(body, "Talks to an external API; rate-limited server-side.") {
+		t.Errorf("expected the risks field pre-filled, body: %s", body)
+	}
+}
+
+// TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet confirms the detail
+// page's "Skill Card" section renders Owner/Risks rows when the current
+// version has them set, plus the always-present static license/terms line
+// linking to the skill's GitHub path.
+func TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "carded", Version: 1, SubmissionID: "seed-carded", DisplayName: "Carded",
+		Description: "Has a skill card.", GitHubPath: "carded/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+		Owner: "Platform Team", Risks: "Runs shell commands; reviewed before publish.",
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "carded", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/carded", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Skill Card") {
+		t.Errorf("expected a Skill Card section heading, body: %s", body)
+	}
+	if !strings.Contains(body, "Platform Team") {
+		t.Errorf("expected the owner row, body: %s", body)
+	}
+	if !strings.Contains(body, "Runs shell commands; reviewed before publish.") {
+		t.Errorf("expected the risks row, body: %s", body)
+	}
+	if !strings.Contains(body, "check the skill's own repository for license details") {
+		t.Errorf("expected the static license/terms notice, body: %s", body)
+	}
+	// GitHubRepo is configured in testHandler ("nanoinfraorg/skills"), so
+	// the static line must link to this skill's own path in it.
+	if !strings.Contains(body, `href="https://github.com/nanoinfraorg/skills/tree/main/carded"`) {
+		t.Errorf("expected the license line to link to the skill's GitHub path, body: %s", body)
+	}
+}
+
+// TestSkillDetail_SkillCardOmitsOwnerAndRisksRowsWhenUnset confirms the
+// "don't render a placeholder for absent optional data" convention this
+// codebase already uses elsewhere (e.g. the VirusTotal audit row): when
+// neither Owner nor Risks is set, the section still renders (the static
+// license line always does), but with no empty Owner:/Risks: rows and no
+// invented placeholder text.
+func TestSkillDetail_SkillCardOmitsOwnerAndRisksRowsWhenUnset(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "uncarded", Version: 1, SubmissionID: "seed-uncarded", DisplayName: "Uncarded",
+		Description: "No skill card fields set.", GitHubPath: "uncarded/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "uncarded", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/uncarded", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Skill Card") {
+		t.Errorf("expected the Skill Card section to still render (the static license line always shows), body: %s", body)
+	}
+	if !strings.Contains(body, "check the skill's own repository for license details") {
+		t.Errorf("expected the static license/terms notice to always appear, body: %s", body)
+	}
+	if strings.Contains(body, "Owner:") {
+		t.Errorf("expected no Owner row when unset, body: %s", body)
+	}
+	if strings.Contains(body, "Risks and mitigations:") {
+		t.Errorf("expected no Risks row when unset, body: %s", body)
+	}
+}

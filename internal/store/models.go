@@ -22,6 +22,14 @@ type Submission struct {
 	ArchivePath     string
 	CreatedAt       time.Time
 	DecidedAt       *time.Time
+	// Owner and Risks are optional, submitter-provided free text for the
+	// "Skill Card" governance fields shown on the detail page: who's
+	// accountable for this skill, and what could go wrong with it plus how
+	// that's mitigated. Like DisplayName, an empty string means "not
+	// provided" -- there is no separate has-a-value flag, and no validation
+	// requires either to be set.
+	Owner string
+	Risks string
 }
 
 // SkillVersionStatus is the lifecycle state of one published skill version.
@@ -54,6 +62,13 @@ type SkillVersion struct {
 	GitHubPath   string
 	PublishedAt  time.Time
 	Status       SkillVersionStatus
+	// Owner and Risks are carried forward from the submission that produced
+	// this version (see ApproveSubmissionCore) -- submitter-provided, not
+	// derived from SKILL.md frontmatter, since SKILL.md is a portable format
+	// this server doesn't own. Empty means "not provided", same convention
+	// as Submission's fields of the same name.
+	Owner string
+	Risks string
 }
 
 // Skill is the thin "current version" pointer for one published skill_id.
@@ -84,6 +99,10 @@ type SkillDetail struct {
 	Status       SkillVersionStatus
 	Downloads    int64
 	CreatedAt    time.Time
+	// Owner and Risks mirror the current version's SkillVersion fields of
+	// the same name -- see SkillVersion's doc comment.
+	Owner string
+	Risks string
 }
 
 // SessionRole is the privilege level of an authenticated Google OAuth

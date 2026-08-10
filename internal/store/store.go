@@ -29,7 +29,9 @@ CREATE TABLE IF NOT EXISTS submissions (
 	rejection_reason TEXT,
 	archive_path     TEXT NOT NULL,
 	created_at       TEXT NOT NULL,
-	decided_at       TEXT
+	decided_at       TEXT,
+	owner            TEXT NOT NULL DEFAULT '',
+	risks            TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);
 CREATE INDEX IF NOT EXISTS idx_submissions_skill_id ON submissions(skill_id);
@@ -47,6 +49,8 @@ CREATE TABLE IF NOT EXISTS skill_versions (
 	published_at  TEXT NOT NULL,
 	status        TEXT NOT NULL,
 	search_text   TEXT NOT NULL,
+	owner         TEXT NOT NULL DEFAULT '',
+	risks         TEXT NOT NULL DEFAULT '',
 	UNIQUE (skill_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_id ON skill_versions(skill_id);
@@ -133,6 +137,25 @@ CREATE INDEX IF NOT EXISTS idx_virustotal_scans_status ON virustotal_scans(statu
 // ignored -- SQLite has no "ADD COLUMN IF NOT EXISTS".
 const sessionsCSRFMigration = `ALTER TABLE sessions ADD COLUMN csrf_token TEXT NOT NULL DEFAULT '';`
 
+// ownerRisksMigrations adds the owner and risks columns (see the Owner and
+// Risks fields on Submission and SkillVersion) to submissions and
+// skill_versions tables created by a pre-Skill-Card version of this schema.
+// Like sessionsCSRFMigration above, schema's own "CREATE TABLE IF NOT
+// EXISTS" only applies to a brand-new table, so an existing database needs
+// these ALTERs to pick up the columns; the "duplicate column" error from a
+// second run (this migration already applied, or a fresh database that
+// already had the columns from the start) is deliberately ignored -- SQLite
+// has no "ADD COLUMN IF NOT EXISTS". Both columns are optional free text
+// (empty string means "not provided"), so defaulting to the empty string
+// backfills every pre-existing row with the same "unset" value a brand-new
+// row would get.
+var ownerRisksMigrations = []string{
+	`ALTER TABLE submissions ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE submissions ADD COLUMN risks TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE skill_versions ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE skill_versions ADD COLUMN risks TEXT NOT NULL DEFAULT '';`,
+}
+
 // Store wraps the SQLite database used by skills-server.
 type Store struct {
 	db *sql.DB
@@ -160,6 +183,12 @@ func Open(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply csrf_token migration: %w", err)
 	}
+	for _, migration := range ownerRisksMigrations {
+		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("apply owner/risks migration: %w", err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -169,10 +198,11 @@ func (s *Store) Close() error { return s.db.Close() }
 // CreateSubmission inserts a new pending submission row.
 func (s *Store) CreateSubmission(ctx context.Context, sub Submission) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO submissions (id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO submissions (id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at, owner, risks)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.SkillID, sub.DisplayName, sub.Submitter, string(sub.Status),
 		nullableString(sub.RejectionReason), sub.ArchivePath, formatTime(sub.CreatedAt), nullableTime(sub.DecidedAt),
+		sub.Owner, sub.Risks,
 	)
 	if err != nil {
 		return fmt.Errorf("insert submission: %w", err)
@@ -183,7 +213,7 @@ func (s *Store) CreateSubmission(ctx context.Context, sub Submission) error {
 // GetSubmission fetches one submission by id.
 func (s *Store) GetSubmission(ctx context.Context, id string) (*Submission, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at
+		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at, owner, risks
 		FROM submissions WHERE id = ?`, id)
 	sub, err := scanSubmission(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -200,7 +230,7 @@ func (s *Store) GetSubmission(ctx context.Context, id string) (*Submission, erro
 // newest first.
 func (s *Store) ListSubmissions(ctx context.Context, status string) ([]Submission, error) {
 	query := `
-		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at
+		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at, owner, risks
 		FROM submissions`
 	args := []any{}
 	if status != "" {
@@ -234,7 +264,7 @@ func (s *Store) ListSubmissions(ctx context.Context, status string) ([]Submissio
 // their own submission history and its status.
 func (s *Store) ListSubmissionsBySubmitter(ctx context.Context, submitter string) ([]Submission, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at
+		SELECT id, skill_id, display_name, submitter, status, rejection_reason, archive_path, created_at, decided_at, owner, risks
 		FROM submissions WHERE LOWER(submitter) = LOWER(?) ORDER BY created_at DESC`, submitter)
 	if err != nil {
 		return nil, fmt.Errorf("list submissions by submitter: %w", err)
@@ -292,10 +322,10 @@ func (s *Store) MaxVersion(ctx context.Context, skillID string) (int64, error) {
 func (s *Store) CreateSkillVersion(ctx context.Context, sv SkillVersion) (int64, error) {
 	searchText := strings.ToLower(sv.SkillID + " " + sv.DisplayName + " " + sv.Description)
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO skill_versions (skill_id, version, submission_id, display_name, description, github_path, published_at, status, search_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO skill_versions (skill_id, version, submission_id, display_name, description, github_path, published_at, status, search_text, owner, risks)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sv.SkillID, sv.Version, sv.SubmissionID, sv.DisplayName, sv.Description, sv.GitHubPath,
-		formatTime(sv.PublishedAt), string(sv.Status), searchText,
+		formatTime(sv.PublishedAt), string(sv.Status), searchText, sv.Owner, sv.Risks,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert skill version: %w", err)
@@ -310,7 +340,7 @@ func (s *Store) CreateSkillVersion(ctx context.Context, sv SkillVersion) (int64,
 // GetSkillVersion fetches one specific version of skillID.
 func (s *Store) GetSkillVersion(ctx context.Context, skillID string, version int64) (*SkillVersion, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
 		FROM skill_versions WHERE skill_id = ? AND version = ?`, skillID, version)
 	sv, err := scanSkillVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -325,7 +355,7 @@ func (s *Store) GetSkillVersion(ctx context.Context, skillID string, version int
 // ListSkillVersions returns every version of skillID, newest first.
 func (s *Store) ListSkillVersions(ctx context.Context, skillID string) ([]SkillVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
 		FROM skill_versions WHERE skill_id = ? ORDER BY version DESC`, skillID)
 	if err != nil {
 		return nil, fmt.Errorf("list skill versions: %w", err)
@@ -405,7 +435,7 @@ func (s *Store) GetSkill(ctx context.Context, skillID string) (*Skill, error) {
 // current skill_versions row.
 const skillDetailColumns = `
 		s.skill_id, sv.display_name, sv.description, sv.version, sv.submission_id,
-		sv.github_path, sv.published_at, sv.status, s.downloads, s.created_at`
+		sv.github_path, sv.published_at, sv.status, s.downloads, s.created_at, sv.owner, sv.risks`
 
 const skillDetailFrom = `
 		FROM skills s
@@ -727,7 +757,7 @@ func scanSubmission(row rowScanner) (*Submission, error) {
 	var createdAt string
 	if err := row.Scan(
 		&sub.ID, &sub.SkillID, &sub.DisplayName, &sub.Submitter, &status,
-		&rejectionReason, &sub.ArchivePath, &createdAt, &decidedAt,
+		&rejectionReason, &sub.ArchivePath, &createdAt, &decidedAt, &sub.Owner, &sub.Risks,
 	); err != nil {
 		return nil, err
 	}
@@ -755,7 +785,7 @@ func scanSkillVersion(row rowScanner) (*SkillVersion, error) {
 	var publishedAt, status string
 	if err := row.Scan(
 		&sv.ID, &sv.SkillID, &sv.Version, &sv.SubmissionID, &sv.DisplayName, &sv.Description,
-		&sv.GitHubPath, &publishedAt, &status,
+		&sv.GitHubPath, &publishedAt, &status, &sv.Owner, &sv.Risks,
 	); err != nil {
 		return nil, err
 	}
@@ -773,7 +803,7 @@ func scanSkillDetail(row rowScanner) (*SkillDetail, error) {
 	var publishedAt, createdAt, status string
 	if err := row.Scan(
 		&sd.SkillID, &sd.DisplayName, &sd.Description, &sd.Version, &sd.SubmissionID,
-		&sd.GitHubPath, &publishedAt, &status, &sd.Downloads, &createdAt,
+		&sd.GitHubPath, &publishedAt, &status, &sd.Downloads, &createdAt, &sd.Owner, &sd.Risks,
 	); err != nil {
 		return nil, err
 	}
