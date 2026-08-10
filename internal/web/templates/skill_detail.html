@@ -18,7 +18,7 @@
 
 <h2>Skill Card</h2>
 <ul>
-  {{if .Skill.Owner}}<li><strong>Owner:</strong> {{.Skill.Owner}}</li>{{end}}
+  {{if .Skill.Owner}}<li><strong>Owner:</strong> {{if .User}}{{.Skill.Owner}}{{else}}<span title="Sign in to view">hidden -- sign in to view</span>{{end}}</li>{{end}}
   {{if .Skill.Risks}}<li><strong>Risks and mitigations:</strong> {{.Skill.Risks}}</li>{{end}}
   <li><strong>License or terms:</strong> check the skill's own repository for license details{{if .RepoLink}} (<a href="{{.RepoLink}}">{{.Skill.SkillID}} on GitHub</a>){{end}}.</li>
 </ul>
