@@ -1435,7 +1435,9 @@ func TestSubmitForm_EditPrefillOwnerFallsBackToSessionEmailWhenUnset(t *testing.
 // TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet confirms the detail
 // page's "Skill Card" section renders Owner/Risks rows when the current
 // version has them set, plus the always-present static license/terms line
-// linking to the skill's GitHub path.
+// linking to the skill's GitHub path. Requested with a signed-in session,
+// since Owner is masked for anonymous visitors -- see
+// TestSkillDetail_MasksOwnerFromAnonymousVisitors below.
 func TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet(t *testing.T) {
 	h, apiHandler, _ := testHandler(t)
 	mux := newMux(h)
@@ -1451,9 +1453,12 @@ func TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet(t *testing.T) {
 	if err := apiHandler.Store.SetSkillPointer(ctx, "carded", 1, time.Now()); err != nil {
 		t.Fatalf("seed skill pointer: %v", err)
 	}
+	cookie := seedSession(t, apiHandler, "viewer@example.com", store.SessionRoleSubmitter, "csrf-carded")
 
+	req := httptest.NewRequest(http.MethodGet, "/skills/carded", nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/carded", nil))
+	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
 	}
@@ -1462,7 +1467,7 @@ func TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet(t *testing.T) {
 		t.Errorf("expected a Skill Card section heading, body: %s", body)
 	}
 	if !strings.Contains(body, "Platform Team") {
-		t.Errorf("expected the owner row, body: %s", body)
+		t.Errorf("expected the owner row for a signed-in visitor, body: %s", body)
 	}
 	if !strings.Contains(body, "Runs shell commands; reviewed before publish.") {
 		t.Errorf("expected the risks row, body: %s", body)
@@ -1474,6 +1479,45 @@ func TestSkillDetail_ShowsSkillCardOwnerAndRisksWhenSet(t *testing.T) {
 	// the static line must link to this skill's own path in it.
 	if !strings.Contains(body, `href="https://github.com/nanoinfraorg/skills/tree/main/carded"`) {
 		t.Errorf("expected the license line to link to the skill's GitHub path, body: %s", body)
+	}
+}
+
+// TestSkillDetail_MasksOwnerFromAnonymousVisitors confirms the Owner row's
+// value -- often a real email address, since GET /submit suggests the
+// submitter's own verified email as a starting value (see submitPageData's
+// doc comment) -- is never exposed to an anonymous visitor of this fully
+// public, unauthenticated page. Risks and the static license line have no
+// such PII concern and stay visible either way.
+func TestSkillDetail_MasksOwnerFromAnonymousVisitors(t *testing.T) {
+	h, apiHandler, _ := testHandler(t)
+	mux := newMux(h)
+	ctx := context.Background()
+
+	if _, err := apiHandler.Store.CreateSkillVersion(ctx, store.SkillVersion{
+		SkillID: "carded-anon", Version: 1, SubmissionID: "seed-carded-anon", DisplayName: "Carded Anon",
+		Description: "Has a skill card.", GitHubPath: "carded-anon/", PublishedAt: time.Now(), Status: store.SkillVersionPublished,
+		Owner: "alice@example.com", Risks: "Runs shell commands; reviewed before publish.",
+	}); err != nil {
+		t.Fatalf("seed skill version: %v", err)
+	}
+	if err := apiHandler.Store.SetSkillPointer(ctx, "carded-anon", 1, time.Now()); err != nil {
+		t.Fatalf("seed skill pointer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills/carded-anon", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "alice@example.com") {
+		t.Errorf("expected the real Owner value never to reach an anonymous visitor, body: %s", body)
+	}
+	if !strings.Contains(body, "hidden -- sign in to view") {
+		t.Errorf("expected a masked placeholder in the Owner row, body: %s", body)
+	}
+	if !strings.Contains(body, "Runs shell commands; reviewed before publish.") {
+		t.Errorf("expected Risks to stay visible for an anonymous visitor, body: %s", body)
 	}
 }
 

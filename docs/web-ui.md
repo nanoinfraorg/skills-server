@@ -140,7 +140,13 @@ considerations, signing identifiers). Only three lines are shown:
   editable nudge against an accidentally-empty field, not a hidden
   server-side default: the visitor sees it, can clear or change it, and
   whatever's in the field when they submit (including empty) is exactly
-  what's stored.
+  what's stored. Once set, though, it's rendered as-is only to a
+  *signed-in* visitor of the detail page; an anonymous visitor sees a
+  masked placeholder ("hidden -- sign in to view") instead, since Owner
+  very often ends up holding a real email address (the suggested-fill
+  above) and this page has no auth requirement at all. Risks and the
+  static license line have no such PII concern and stay visible either
+  way.
 - **Risks and mitigations** -- an optional, submitter-provided free-text
   field (`risks`) describing what could go wrong with the skill and how
   that's mitigated (e.g. "runs arbitrary shell commands -- review scripts/
