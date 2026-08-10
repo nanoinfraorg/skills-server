@@ -602,9 +602,10 @@ and every pull request targeting `main`:
 
 1. **`test`** -- `go build`, `go vet`, a `gofmt -l` format check, and
    `go test ./... -race`.
-2. **`docker`** (`needs: test`) -- builds the image for `linux/amd64` and
-   `linux/arm64`. On a pull request this only *builds* (validating the
-   Dockerfile compiles), nothing is pushed. On a push to `main` or a version
+2. **`docker`** (`needs: test`) -- builds the image for `linux/amd64` (no
+   arm64 -- not needed for this deployment). On a pull request this only
+   *builds* (validating the Dockerfile compiles), nothing is pushed. On a
+   push to `main` or a version
    tag, it also pushes to `ghcr.io/nanoinfraorg/skills-server`, tagged with
    the branch name, the commit SHA, `latest` (on `main`), and the semver
    tag/major.minor (on a `v*.*.*` tag) -- using the workflow's automatic
