@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Browse skills</h1>
+
+<form method="get" action="/skills" role="search">
+  <fieldset role="group">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Search skills...">
+    <input type="submit" value="Search">
+  </fieldset>
+</form>
+
+{{if .Query}}
+  <p>Search results for &ldquo;{{.Query}}&rdquo;:</p>
+{{else}}
+  <p>Trending skills:</p>
+{{end}}
+
+{{if .Skills}}
+  <div class="grid">
+  {{range .Skills}}
+    <article>
+      <header><a href="/skills/{{.SkillID}}"><strong>{{.DisplayName}}</strong></a></header>
+      <p>{{.Description}}</p>
+      <footer>
+        <small>v{{.Version}} &middot; {{.Downloads}} download{{if ne .Downloads 1}}s{{end}}</small>
+      </footer>
+    </article>
+  {{end}}
+  </div>
+{{else}}
+  <p><em>No skills found.</em></p>
+{{end}}
+{{end}}

@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Submit a skill</h1>
+<p>Submitting an already-published skill id is treated as a new version, not an error.</p>
+
+{{if .Error}}<p><mark>{{.Error}}</mark></p>{{end}}
+
+<form method="post" action="/submit" enctype="multipart/form-data">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <label for="skill_id">Skill id
+    <input type="text" id="skill_id" name="skill_id" value="{{.SkillID}}"
+           placeholder="my-skill" pattern="[a-z0-9]+(-[a-z0-9]+)*" maxlength="64" required>
+  </label>
+  <small>Lowercase letters, digits, and hyphens only.</small>
+
+  <label for="display_name">Display name
+    <input type="text" id="display_name" name="display_name" value="{{.DisplayName}}" required>
+  </label>
+
+  <label for="archive">Archive (.zip, must contain a root SKILL.md)
+    <input type="file" id="archive" name="archive" accept=".zip" required>
+  </label>
+
+  <button type="submit">Submit for review</button>
+</form>
+{{end}}

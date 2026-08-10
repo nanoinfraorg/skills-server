@@ -1,0 +1,69 @@
+{{define "content"}}
+<h1>Admin dashboard</h1>
+
+{{if .Outcome}}
+  <p><mark>{{.Outcome.Message}}</mark></p>
+{{end}}
+
+<h2>Pending submissions</h2>
+{{if .Pending}}
+  <table>
+    <thead><tr><th>Skill</th><th>Display name</th><th>Submitter</th><th>Submitted</th><th>Scan</th><th>Actions</th></tr></thead>
+    <tbody>
+    {{range .Pending}}
+      <tr>
+        <td><code>{{.SkillID}}</code></td>
+        <td>{{.DisplayName}}</td>
+        <td>{{.Submitter}}</td>
+        <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+        <td>
+          {{if .Scan}}
+            {{.Scan.Verdict}}{{if not .Scan.TextOnlyOK}} (text-only check failed){{end}}
+          {{else}}
+            <em>not yet scanned</em>
+          {{end}}
+        </td>
+        <td>
+          <form method="post" action="/admin/submissions/{{.ID}}/approve" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit">Approve</button>
+          </form>
+          <form method="post" action="/admin/submissions/{{.ID}}/reject" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="text" name="reason" placeholder="Rejection reason" required>
+            <button type="submit" class="secondary">Reject</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p><em>No pending submissions.</em></p>
+{{end}}
+
+<h2>Published skills</h2>
+{{if .Skills}}
+  <table>
+    <thead><tr><th>Skill</th><th>Current version</th><th>Status</th><th>Downloads</th><th>Actions</th></tr></thead>
+    <tbody>
+    {{range .Skills}}
+      <tr>
+        <td><a href="/skills/{{.SkillID}}"><code>{{.SkillID}}</code></a></td>
+        <td>v{{.Version}}</td>
+        <td>{{if eq .Status "quarantined"}}<mark>quarantined</mark>{{else}}published{{end}}</td>
+        <td>{{.Downloads}}</td>
+        <td>
+          <form method="post" action="/admin/skills/{{.SkillID}}/rescan" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="secondary">Rescan</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p><em>No published skills yet.</em></p>
+{{end}}
+{{end}}

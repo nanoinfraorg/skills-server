@@ -83,57 +83,63 @@ func (h *Handler) GetScan(w http.ResponseWriter, r *http.Request) {
 // quarantined, which removes it from search/trending and the download
 // endpoint. Returns the report either way.
 func (h *Handler) RescanSkill(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	ctx := r.Context()
+	dto, quarantined, subErr := h.RescanSkillCore(r.Context(), r.PathValue("id"))
+	if subErr != nil {
+		writeError(w, subErr.Status, subErr.Message)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scan":        dto,
+		"quarantined": quarantined,
+	})
+}
 
+// RescanSkillCore is the implementation shared by RescanSkill (the JSON
+// API) and the HTML admin dashboard's rescan action (internal/web); see
+// RescanSkill's doc comment for what it does. The returned scanDTO's
+// exported fields (Verdict, TextOnlyOK, ...) are readable by internal/web
+// without that package needing to name the (unexported) scanDTO type
+// itself.
+func (h *Handler) RescanSkillCore(ctx context.Context, id string) (scanDTO, bool, *SubmissionError) {
 	skill, err := h.Store.GetSkill(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "skill not found")
-		return
+		return scanDTO{}, false, &SubmissionError{http.StatusNotFound, "skill not found"}
 	}
 	if err != nil {
 		h.Logger.Error("get skill", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not load skill")
-		return
+		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "could not load skill"}
 	}
 
 	sv, err := h.Store.GetSkillVersion(ctx, id, skill.CurrentVersion)
 	if err != nil {
 		h.Logger.Error("get current skill version", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not load the skill's current version")
-		return
+		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "could not load the skill's current version"}
 	}
 
 	archivePath := filepath.Join(h.PublishedDir, id+".zip")
 	report, err := scan.RunOnArchive(ctx, archivePath, id, h.ScanConfig)
 	if err != nil {
 		h.Logger.Error("rescan published archive", "error", err, "skill_id", id)
-		writeError(w, http.StatusInternalServerError, "could not re-validate the published archive: "+err.Error())
-		return
+		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "could not re-validate the published archive: " + err.Error()}
 	}
 
 	dto, err := h.recordScan(ctx, report, store.ScanTargetSkillVersion, scanIDString(sv.ID), store.ScanTriggerManual)
 	if err != nil {
 		h.Logger.Error("record rescan", "error", err)
-		writeError(w, http.StatusInternalServerError, "scan completed but could not be recorded")
-		return
+		return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
 	}
 
 	quarantined := false
 	if report.Verdict == scan.VerdictBlocked {
 		if err := h.Store.SetSkillVersionStatus(ctx, id, skill.CurrentVersion, store.SkillVersionQuarantined); err != nil {
 			h.Logger.Error("quarantine skill version", "error", err, "skill_id", id, "version", skill.CurrentVersion)
-			writeError(w, http.StatusInternalServerError, "scan blocked this version but it could not be quarantined")
-			return
+			return scanDTO{}, false, &SubmissionError{http.StatusInternalServerError, "scan blocked this version but it could not be quarantined"}
 		}
 		quarantined = true
 	}
 
 	h.Logger.Info("skill rescanned", "skill_id", id, "version", skill.CurrentVersion, "verdict", report.Verdict, "quarantined", quarantined)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scan":        dto,
-		"quarantined": quarantined,
-	})
+	return dto, quarantined, nil
 }
 
 // recordScan serializes report and persists it against the given target,
