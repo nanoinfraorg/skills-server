@@ -511,6 +511,86 @@ func (s *Store) TrendingSkills(ctx context.Context, limit int) ([]SkillDetail, e
 	return scanSkillDetails(rows)
 }
 
+// SkillSort names the orderings the public directory exposes. Anything else
+// falls back to SkillSortDownloads, so a hand-edited query string cannot
+// smuggle SQL into the ORDER BY -- the value is mapped to a fixed clause here
+// rather than interpolated.
+type SkillSort string
+
+const (
+	SkillSortDownloads SkillSort = "downloads"
+	SkillSortRecent    SkillSort = "recent"
+	SkillSortName      SkillSort = "name"
+)
+
+// orderClause maps a sort plus a direction onto a fixed ORDER BY. Every branch
+// ends with a unique tiebreaker (skill_id) so paging is stable: without one,
+// two skills with equal downloads can swap places between page 1 and page 2 and
+// a row is silently skipped or repeated.
+func (o SkillSort) orderClause(desc bool) string {
+	dir, opp := "DESC", "ASC"
+	if !desc {
+		dir, opp = "ASC", "DESC"
+	}
+	switch o {
+	case SkillSortRecent:
+		return "ORDER BY sv.published_at " + dir + ", s.skill_id ASC"
+	case SkillSortName:
+		// COLLATE goes before the direction; SQLite rejects "ASC COLLATE NOCASE".
+		return "ORDER BY sv.display_name COLLATE NOCASE " + dir + ", s.skill_id " + dir
+	default:
+		return "ORDER BY s.downloads " + dir + ", sv.published_at " + opp + ", s.skill_id ASC"
+	}
+}
+
+// SkillPage is one page of the public directory plus the total it was drawn
+// from, so the caller can render "showing 1-50 of N" and a pager without a
+// second round trip.
+type SkillPage struct {
+	Skills []SkillDetail
+	Total  int
+}
+
+// ListPublishedSkills returns one page of published skills, excluding any whose
+// current version is quarantined. query, when non-empty, filters on the same
+// denormalized search text SearchSkills uses. limit and offset are clamped by
+// the caller; a non-positive limit returns no rows rather than the whole table.
+func (s *Store) ListPublishedSkills(
+	ctx context.Context, query string, sort SkillSort, desc bool, limit, offset int,
+) (*SkillPage, error) {
+	where := "WHERE sv.status != ?"
+	args := []any{string(SkillVersionQuarantined)}
+	if query != "" {
+		where += " AND sv.search_text LIKE ?"
+		args = append(args, "%"+strings.ToLower(query)+"%")
+	}
+
+	var total int
+	countRow := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*)`+skillDetailFrom+` `+where, args...)
+	if err := countRow.Scan(&total); err != nil {
+		return nil, fmt.Errorf("count published skills: %w", err)
+	}
+
+	if limit <= 0 {
+		return &SkillPage{Total: total}, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT`+skillDetailColumns+skillDetailFrom+` `+where+` `+
+			sort.orderClause(desc)+` LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list published skills: %w", err)
+	}
+	defer rows.Close()
+	skills, err := scanSkillDetails(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &SkillPage{Skills: skills, Total: total}, nil
+}
+
 // ListActiveSkillDetails returns every skill's current version, excluding
 // any already-quarantined ones, for the daily re-scan scheduler (which has
 // no reason to re-scan something an admin already had to pull).

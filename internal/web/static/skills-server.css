@@ -394,38 +394,110 @@ main h2 {
   font-size: 0.9375rem;
 }
 
-/* Pico's .grid is repeat(auto-fit, minmax(0%, 1fr)): no minimum width, so it
-   makes one column per child and never wraps. With a couple of skills that
-   looked fine; at thirteen every card collapsed to about 50px and the
-   descriptions wrapped one character per line. min() keeps the floor from
-   overflowing a narrow viewport. */
-.skill-cards {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
-  align-items: stretch;
-}
+/* ---------- The public directory table ----------------------------------- */
 
-.skill-cards > article {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border: 1px solid var(--pico-muted-border-color);
-  border-radius: var(--pico-border-radius);
-  transition: border-color 0.12s ease;
-}
-
-.skill-cards > article > p {
-  flex: 1;
+.directory__count {
   color: var(--pico-muted-color);
   font-size: 0.9375rem;
 }
 
-.skill-cards > article:has(a:hover) {
-  border-color: var(--pico-primary);
+.directory {
+  width: 100%;
+  margin-block-start: 0.5rem;
 }
 
-/* Skill ids, versions and hashes are identifiers, so they are set in mono
-   wherever they appear in a card or a table. */
-.skill-cards code,
+/* Sortable headings. The arrow marks the column in effect; aria-sort in the
+   template carries the same information to a screen reader. */
+.directory__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-family: var(--brand-display);
+  font-weight: 600;
+  color: var(--pico-muted-color);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.directory__sort:hover {
+  color: var(--pico-primary);
+}
+
+.directory__sort.is-active {
+  color: var(--pico-color);
+}
+
+/* The name cell stacks three things: the link, the id, and one line of
+   description. Everything else in the row stays narrow. */
+.directory td:first-child {
+  min-width: 0;
+}
+
+.directory__id {
+  margin-inline-start: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+}
+
+.directory__desc {
+  display: block;
+  margin-block-start: 0.15rem;
+  max-width: 68ch;
+  color: var(--pico-muted-color);
+  font-size: 0.875rem;
+  /* One line with an ellipsis. The full text is in the cell's title attribute
+     and on the skill's own page, so nothing is lost. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory__num {
+  text-align: right;
+  font-family: var(--pico-font-family-monospace);
+  white-space: nowrap;
+}
+
+.directory__when {
+  white-space: nowrap;
+  font-size: 0.875rem;
+}
+
+.directory__when small {
+  display: block;
+  font-family: var(--pico-font-family-monospace);
+  color: var(--pico-muted-color);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-block-start: 1.5rem;
+  padding-block-start: 1rem;
+  border-top: 1px solid var(--pico-muted-border-color);
+  font-family: var(--brand-display);
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.pager a {
+  text-decoration: none;
+}
+
+.pager__disabled {
+  color: var(--pico-muted-color);
+  opacity: 0.5;
+}
+
+.pager__position {
+  font-family: var(--pico-font-family-monospace);
+  font-weight: 400;
+  font-size: 0.8125rem;
+  color: var(--pico-muted-color);
+}
+
 table code {
   font-size: 0.8125rem;
 }

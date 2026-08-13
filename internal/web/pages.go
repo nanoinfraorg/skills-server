@@ -21,15 +21,6 @@ import (
 	"github.com/nanoinfraorg/skills-server/internal/virustotal"
 )
 
-// directoryLimit caps how many skills the directory page shows for a
-// default (no query) listing or a search's results -- mirrors
-// internal/api's own trendingLimit constant for the JSON
-// /api/v1/search and /api/v1/trending endpoints (unexported there, so
-// re-declared here rather than shared; it's a display cap, not business
-// logic, and both packages derive it from nothing more meaningful than
-// "a reasonable page size").
-const directoryLimit = 20
-
 // maxUploadBytes caps the whole multipart submit-form request body,
 // mirroring internal/api's own identically-named, identically-computed var
 // -- both are derived directly from the exported pipeline.MaxArchiveBytes,
@@ -46,12 +37,69 @@ func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
 	h.render(w, http.StatusOK, "home.html", basePage{User: navUser(sess)})
 }
 
+// directoryPageSize is how many rows the public directory shows per page.
+const directoryPageSize = 50
+
+// skillsSortLink is one clickable column heading. The URL is assembled here
+// rather than in the template: a template that concatenates query strings is
+// where escaping bugs live.
+type skillsSortLink struct {
+	Key    string
+	Label  string
+	URL    string
+	Active bool
+	Desc   bool // the direction currently in effect, only meaningful when Active
+}
+
 // skillsPageData is the data shape for skills.html (the public directory).
 type skillsPageData struct {
 	basePage
 	Query    string
 	Skills   []store.SkillDetail
-	Trending bool // true when Query is empty and Skills is the default trending listing
+	Trending bool // true when Query is empty, so the page can say so
+	Total    int
+	Page     int
+	Pages    int
+	From     int // 1-based index of the first row on this page
+	To       int
+	Sorts    []skillsSortLink
+	PrevURL  string
+	NextURL  string
+}
+
+// directorySorts is the whitelist of orderings the directory exposes, in the
+// order their headings appear.
+var directorySorts = []struct {
+	Key         store.SkillSort
+	Label       string
+	DefaultDesc bool
+}{
+	{store.SkillSortName, "Skill", false},
+	{store.SkillSortDownloads, "Downloads", true},
+	{store.SkillSortRecent, "Published", true},
+}
+
+// directoryURL builds a /skills link preserving the parameters that are not
+// being changed. Empty and default values are omitted so the common case stays
+// a clean "/skills".
+func directoryURL(query string, sort store.SkillSort, desc bool, page int) string {
+	values := url.Values{}
+	if query != "" {
+		values.Set("q", query)
+	}
+	if sort != store.SkillSortDownloads {
+		values.Set("sort", string(sort))
+	}
+	if !desc {
+		values.Set("dir", "asc")
+	}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(page))
+	}
+	if len(values) == 0 {
+		return "/skills"
+	}
+	return "/skills?" + values.Encode()
 }
 
 // Skills renders "/skills": a search box, and either search results for
@@ -60,28 +108,101 @@ type skillsPageData struct {
 // GET /api/v1/trending call.
 func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFromRequest(r)
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	q := r.URL.Query()
+	query := strings.TrimSpace(q.Get("q"))
 
-	var (
-		skills []store.SkillDetail
-		err    error
-	)
-	if query != "" {
-		skills, err = h.API.Store.SearchSkills(r.Context(), query, directoryLimit)
-	} else {
-		skills, err = h.API.Store.TrendingSkills(r.Context(), directoryLimit)
+	// An unknown sort key falls back to downloads rather than erroring: this is
+	// a public page reached from shared links, and the store maps the value to a
+	// fixed ORDER BY, so a bogus one is harmless.
+	sort := store.SkillSort(q.Get("sort"))
+	defaultDesc := true
+	known := false
+	for _, s := range directorySorts {
+		if s.Key == sort {
+			defaultDesc, known = s.DefaultDesc, true
+			break
+		}
 	}
+	if !known {
+		sort, defaultDesc = store.SkillSortDownloads, true
+	}
+	desc := defaultDesc
+	switch q.Get("dir") {
+	case "asc":
+		desc = false
+	case "desc":
+		desc = true
+	}
+
+	page, err := strconv.Atoi(q.Get("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	result, err := h.API.Store.ListPublishedSkills(
+		r.Context(), query, sort, desc, directoryPageSize, (page-1)*directoryPageSize,
+	)
 	if err != nil {
 		h.Logger.Error("list skills for directory page", "error", err, "query", query)
 		h.renderMessage(w, http.StatusInternalServerError, sess, "Error", "Could not load skills.")
 		return
 	}
 
+	pages := (result.Total + directoryPageSize - 1) / directoryPageSize
+	if pages < 1 {
+		pages = 1
+	}
+	// A page number past the end would render an empty table with a working
+	// pager, which reads as "the catalog is empty". Send it to the last page.
+	if page > pages {
+		http.Redirect(w, r, directoryURL(query, sort, desc, pages), http.StatusSeeOther)
+		return
+	}
+
+	sorts := make([]skillsSortLink, 0, len(directorySorts))
+	for _, s := range directorySorts {
+		active := s.Key == sort
+		// Clicking the active heading flips direction; clicking another starts
+		// at that column's natural direction.
+		next := s.DefaultDesc
+		if active {
+			next = !desc
+		}
+		sorts = append(sorts, skillsSortLink{
+			Key:    string(s.Key),
+			Label:  s.Label,
+			URL:    directoryURL(query, s.Key, next, 1),
+			Active: active,
+			Desc:   desc,
+		})
+	}
+
+	from, to := 0, 0
+	if len(result.Skills) > 0 {
+		from = (page-1)*directoryPageSize + 1
+		to = from + len(result.Skills) - 1
+	}
+	prev, nextURL := "", ""
+	if page > 1 {
+		prev = directoryURL(query, sort, desc, page-1)
+	}
+	if page < pages {
+		nextURL = directoryURL(query, sort, desc, page+1)
+	}
+
 	h.render(w, http.StatusOK, "skills.html", skillsPageData{
 		basePage: basePage{Title: "Browse skills", User: navUser(sess)},
 		Query:    query,
-		Skills:   skills,
+		Skills:   result.Skills,
 		Trending: query == "",
+		Total:    result.Total,
+		Page:     page,
+		Pages:    pages,
+		From:     from,
+		To:       to,
+		Sorts:    sorts,
+		PrevURL:  prev,
+		NextURL:  nextURL,
 	})
 }
 

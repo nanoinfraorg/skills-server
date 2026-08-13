@@ -9,25 +9,72 @@
   </fieldset>
 </form>
 
-{{if .Query}}
-  <p>Search results for &ldquo;{{.Query}}&rdquo;:</p>
-{{else}}
-  <p>Trending skills:</p>
-{{end}}
-
 {{if .Skills}}
-  <div class="grid skill-cards">
-  {{range .Skills}}
-    <article>
-      <header><a href="/skills/{{.SkillID}}"><strong>{{.DisplayName}}</strong></a></header>
-      <p>{{.Description}}</p>
-      <footer>
-        <small>v{{.Version}} &middot; {{.Downloads}} download{{if ne .Downloads 1}}s{{end}}</small>
-      </footer>
-    </article>
+  <p class="directory__count">
+    {{if .Query}}
+      Showing <strong>{{.From}}&ndash;{{.To}}</strong> of <strong>{{.Total}}</strong>
+      for &ldquo;{{.Query}}&rdquo;.
+      <a href="/skills">Clear search</a>
+    {{else}}
+      Showing <strong>{{.From}}&ndash;{{.To}}</strong> of <strong>{{.Total}}</strong> published skills.
+    {{end}}
+  </p>
+
+  <table class="directory">
+    <thead>
+      <tr>
+        {{range .Sorts}}
+          {{/* aria-sort tells a screen reader which column the table is
+               ordered by, which a plain link cannot convey. */}}
+          <th scope="col"
+              {{if .Active}}aria-sort="{{if .Desc}}descending{{else}}ascending{{end}}"{{end}}>
+            <a href="{{.URL}}" class="directory__sort{{if .Active}} is-active{{end}}">
+              {{.Label}}{{if .Active}}<span aria-hidden="true">{{if .Desc}} ↓{{else}} ↑{{end}}</span>{{end}}
+            </a>
+          </th>
+        {{end}}
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Skills}}
+        <tr>
+          <td>
+            <a href="/skills/{{.SkillID}}"><strong>{{.DisplayName}}</strong></a>
+            <code class="directory__id">{{.SkillID}}</code>
+            {{/* One line with an ellipsis; the full text is in the title
+                 attribute and on the detail page. */}}
+            <span class="directory__desc" title="{{.Description}}">{{.Description}}</span>
+          </td>
+          <td class="directory__num">{{.Downloads}}</td>
+          <td class="directory__when">
+            <time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "2 Jan 2006"}}</time>
+            <small>v{{.Version}}</small>
+          </td>
+        </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  {{if gt .Pages 1}}
+    <nav class="pager" aria-label="Pagination">
+      {{if .PrevURL}}
+        <a href="{{.PrevURL}}" rel="prev">&larr; Previous</a>
+      {{else}}
+        <span class="pager__disabled">&larr; Previous</span>
+      {{end}}
+      <span class="pager__position">Page {{.Page}} of {{.Pages}}</span>
+      {{if .NextURL}}
+        <a href="{{.NextURL}}" rel="next">Next &rarr;</a>
+      {{else}}
+        <span class="pager__disabled">Next &rarr;</span>
+      {{end}}
+    </nav>
   {{end}}
-  </div>
 {{else}}
-  <p><em>No skills found.</em></p>
+  {{if .Query}}
+    <p><em>No skills match &ldquo;{{.Query}}&rdquo;.</em> <a href="/skills">Browse all skills</a></p>
+  {{else}}
+    <p><em>No skills published yet.</em></p>
+  {{end}}
 {{end}}
 {{end}}
