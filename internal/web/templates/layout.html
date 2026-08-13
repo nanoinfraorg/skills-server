@@ -3,15 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Title}}{{.Title}} · {{end}}skills-server</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}nanoinfra skills</title>
+  <meta name="theme-color" content="#f6f2ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17140f" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/static/brand/nanoinfra_mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/pico.min.css">
   <link rel="stylesheet" href="/static/skills-server.css">
+  <!-- Loaded by src rather than inline: the preview view renders untrusted
+       SKILL.md, and the tests assert no live script tag reaches the response.
+       An inline block in the chrome would defeat that check on every page. -->
+  <script src="/static/theme.js"></script>
 </head>
 <body>
   <header class="container">
     <nav>
       <ul>
-        <li><a href="/" class="brand"><strong>skills-server</strong></a></li>
+        <li>
+          <a href="/" class="brand">
+            <img src="/static/brand/nanoinfra_logo.svg" alt="nanoinfra" width="1300" height="220">
+            <small>skills</small>
+          </a>
+        </li>
       </ul>
       <ul>
         <li><a href="/skills">Browse skills</a></li>
@@ -27,6 +39,11 @@
         {{else}}
           <li><a href="/auth/google/login" role="button">Sign in with Google</a></li>
         {{end}}
+        <li>
+          <button type="button" id="theme-toggle" aria-label="Switch between light and dark">
+            <span aria-hidden="true"></span>
+          </button>
+        </li>
       </ul>
     </nav>
   </header>
@@ -34,7 +51,11 @@
     {{template "content" .}}
   </main>
   <footer class="container">
-    <small><a href="https://github.com/nanoinfraorg/skills-server">skills-server</a> &middot; brought to you by <a href="https://nanoinfra.org">nanoinfra.org</a></small>
+    <small>
+      <a href="https://nanoinfra.org/skills/">About this catalog</a> &middot;
+      <a href="https://github.com/nanoinfraorg/skills-server">skills-server</a> &middot;
+      part of <a href="https://nanoinfra.org">nanoinfra</a>
+    </small>
   </footer>
 </body>
 </html>
