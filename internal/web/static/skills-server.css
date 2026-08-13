@@ -373,8 +373,13 @@ main h2 {
 
 /* Feature grid: left-aligned like the landing page's pillars. Centred text
    reads as a marketing template. */
+.features {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+}
+
 .features article {
   text-align: left;
+  min-width: 0;
   border: 1px solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius);
 }
@@ -389,9 +394,20 @@ main h2 {
   font-size: 0.9375rem;
 }
 
+/* Pico's .grid is repeat(auto-fit, minmax(0%, 1fr)): no minimum width, so it
+   makes one column per child and never wraps. With a couple of skills that
+   looked fine; at thirteen every card collapsed to about 50px and the
+   descriptions wrapped one character per line. min() keeps the floor from
+   overflowing a narrow viewport. */
+.skill-cards {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  align-items: stretch;
+}
+
 .skill-cards > article {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   border: 1px solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius);
   transition: border-color 0.12s ease;
@@ -412,6 +428,30 @@ main h2 {
 .skill-cards code,
 table code {
   font-size: 0.8125rem;
+}
+
+/* The admin dashboard, my-submissions and skill-detail pages all render wide
+   tables (ids, timestamps, verdicts), and skill detail renders a <pre> of
+   untrusted SKILL.md. Neither is wrapped in a scroll container by the
+   templates, so on a narrow viewport they would push the page sideways. */
+table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.skill-md-preview {
+  overflow-wrap: anywhere;
+}
+
+.skill-md-preview img {
+  max-width: 100%;
+  height: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {
