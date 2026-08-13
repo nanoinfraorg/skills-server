@@ -1,96 +1,424 @@
-/* skills-server's own small theme layer on top of Pico CSS (pico.min.css).
-   Kept in one file and loaded on every page (see layout.html) so the site
-   has one consistent look instead of each template inventing its own
-   inline <style> block. Still no build step, no utility-class framework --
-   plain CSS, a handful of classes, applied on top of Pico's variables. */
+/* skills-server's theme layer on top of Pico CSS v2.1.1 (pico.min.css).
+ *
+ * The point of this file is that skills.nanoinfra.org should be visually
+ * indistinguishable from nanoinfra.org: same four ambers lifted from
+ * images/nanoinfra_logo.svg in the framework repo, same three faces with the
+ * same jobs, same hairline-and-3px-radius language. It works by overriding
+ * Pico's custom properties rather than fighting its selectors, so every form,
+ * table and button the templates already use inherits the brand for free.
+ *
+ * No build step and no third-party requests: the fonts are served from
+ * /static/fonts (embedded in the binary via //go:embed static), latin subset
+ * only, because the audience for a self-hosted catalog should not have to
+ * trust a font CDN to read it.
+ */
 
-/* A slim colored bar across the very top of every page -- the one thing
-   present on every route, so the site reads as "branded" even on the
-   plainest pages (the 404, a bare message page, etc). */
-body {
-  border-top: 4px solid var(--pico-primary);
+/* ---------- Faces ---------------------------------------------------------
+   Baloo 2 matches the wordmark's rounded letterforms and carries headings;
+   Plex Sans is for reading; Plex Mono is strictly machine output -- skill ids,
+   commands, hashes, JSON. */
+
+@font-face {
+  font-family: "Baloo 2";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/baloo-2-latin-600-normal.woff2") format("woff2");
 }
 
-/* Nav: a small square brand mark before the site name, and a touch more
-   breathing room than Pico's default. */
+@font-face {
+  font-family: "Baloo 2";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/baloo-2-latin-700-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+
+/* ---------- Brand tokens -------------------------------------------------- */
+
+:root {
+  --brand-body: #f4a949;
+  --brand-deep: #b94d0b;
+  --brand-mid: #d96016;
+  --brand-lamp: #fbcb89;
+
+  --pico-font-family-sans-serif: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --pico-font-family-monospace: "IBM Plex Mono", ui-monospace, monospace;
+  --pico-font-family: var(--pico-font-family-sans-serif);
+  --pico-border-radius: 3px;
+  --pico-typography-spacing-vertical: 1.25rem;
+
+  /* Baloo carries its weight low and its rounded terminals already close the
+     letter gaps, so headings want more weight and no negative tracking. */
+  --pico-font-weight: 400;
+  --brand-display: "Baloo 2", "Trebuchet MS", system-ui, sans-serif;
+}
+
+/* Light. Pico applies these under both the explicit attribute and the media
+   query, so both the toggle and the OS preference are honoured. */
+:root:not([data-theme="dark"]),
+[data-theme="light"] {
+  --pico-background-color: #f6f2ea;
+  --pico-card-background-color: #fdfbf7;
+  --pico-card-sectioning-background-color: #f6f2ea;
+  --pico-color: #17140f;
+  --pico-h1-color: #17140f;
+  --pico-h2-color: #17140f;
+  --pico-h3-color: #17140f;
+  --pico-h4-color: #17140f;
+  --pico-muted-color: #6b6153;
+  --pico-muted-border-color: #e0d7c8;
+  --pico-border-color: #e0d7c8;
+  --pico-primary: #b94d0b;
+  --pico-primary-hover: #9e420a;
+  --pico-primary-focus: rgb(185 77 11 / 25%);
+  --pico-primary-background: #b94d0b;
+  --pico-primary-hover-background: #9e420a;
+  --pico-primary-inverse: #fdfbf7;
+  --pico-primary-border: #b94d0b;
+  --pico-code-background-color: #f1ebe0;
+  --pico-code-color: #6b6153;
+  --pico-form-element-background-color: #fdfbf7;
+  --pico-form-element-border-color: #e0d7c8;
+  --pico-form-element-active-border-color: #b94d0b;
+  --pico-blockquote-border-color: #e0d7c8;
+  /* Pico's secondary role ships a slate blue, which the templates use for
+     `.secondary.outline` buttons. Left alone it is the one blue thing on an
+     amber site. */
+  --pico-secondary: #6b6153;
+  --pico-secondary-hover: #17140f;
+  --pico-secondary-focus: rgb(107 97 83 / 25%);
+  --pico-secondary-background: #6b6153;
+  --pico-secondary-hover-background: #17140f;
+  --pico-secondary-border: #e0d7c8;
+  --pico-secondary-inverse: #fdfbf7;
+  --pico-secondary-underline: rgb(107 97 83 / 50%);
+  --pico-contrast: #17140f;
+  --pico-contrast-hover: #000;
+  --pico-contrast-background: #17140f;
+  --pico-contrast-border: #17140f;
+  --pico-contrast-inverse: #fdfbf7;
+}
+
+@media only screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --pico-background-color: #17140f;
+    --pico-card-background-color: #211d16;
+    --pico-card-sectioning-background-color: #17140f;
+    --pico-color: #f2ece1;
+    --pico-h1-color: #f2ece1;
+    --pico-h2-color: #f2ece1;
+    --pico-h3-color: #f2ece1;
+    --pico-h4-color: #f2ece1;
+    --pico-muted-color: #a89b87;
+    --pico-muted-border-color: #372f24;
+    --pico-border-color: #372f24;
+    --pico-primary: #f4a949;
+    --pico-primary-hover: #f7b867;
+    --pico-primary-focus: rgb(244 169 73 / 25%);
+    --pico-primary-background: #f4a949;
+    --pico-primary-hover-background: #f7b867;
+    --pico-primary-inverse: #17140f;
+    --pico-primary-border: #f4a949;
+    --pico-code-background-color: #211d16;
+    --pico-code-color: #a89b87;
+    --pico-form-element-background-color: #211d16;
+    --pico-form-element-border-color: #372f24;
+    --pico-form-element-active-border-color: #f4a949;
+    --pico-blockquote-border-color: #372f24;
+    --pico-secondary: #a89b87;
+    --pico-secondary-hover: #f2ece1;
+    --pico-secondary-focus: rgb(168 155 135 / 25%);
+    --pico-secondary-background: #a89b87;
+    --pico-secondary-hover-background: #f2ece1;
+    --pico-secondary-border: #372f24;
+    --pico-secondary-inverse: #17140f;
+    --pico-secondary-underline: rgb(168 155 135 / 50%);
+    --pico-contrast: #f2ece1;
+    --pico-contrast-hover: #fff;
+    --pico-contrast-background: #f2ece1;
+    --pico-contrast-border: #f2ece1;
+    --pico-contrast-inverse: #17140f;
+  }
+}
+
+[data-theme="dark"] {
+  --pico-background-color: #17140f;
+  --pico-card-background-color: #211d16;
+  --pico-card-sectioning-background-color: #17140f;
+  --pico-color: #f2ece1;
+  --pico-h1-color: #f2ece1;
+  --pico-h2-color: #f2ece1;
+  --pico-h3-color: #f2ece1;
+  --pico-h4-color: #f2ece1;
+  --pico-muted-color: #a89b87;
+  --pico-muted-border-color: #372f24;
+  --pico-border-color: #372f24;
+  --pico-primary: #f4a949;
+  --pico-primary-hover: #f7b867;
+  --pico-primary-focus: rgb(244 169 73 / 25%);
+  --pico-primary-background: #f4a949;
+  --pico-primary-hover-background: #f7b867;
+  --pico-primary-inverse: #17140f;
+  --pico-primary-border: #f4a949;
+  --pico-code-background-color: #211d16;
+  --pico-code-color: #a89b87;
+  --pico-form-element-background-color: #211d16;
+  --pico-form-element-border-color: #372f24;
+  --pico-form-element-active-border-color: #f4a949;
+  --pico-blockquote-border-color: #372f24;
+  --pico-secondary: #a89b87;
+  --pico-secondary-hover: #f2ece1;
+  --pico-secondary-focus: rgb(168 155 135 / 25%);
+  --pico-secondary-background: #a89b87;
+  --pico-secondary-hover-background: #f2ece1;
+  --pico-secondary-border: #372f24;
+  --pico-secondary-inverse: #17140f;
+  --pico-secondary-underline: rgb(168 155 135 / 50%);
+  --pico-contrast: #f2ece1;
+  --pico-contrast-hover: #fff;
+  --pico-contrast-background: #f2ece1;
+  --pico-contrast-border: #f2ece1;
+  --pico-contrast-inverse: #17140f;
+}
+
+/* ---------- Typography --------------------------------------------------- */
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--brand-display);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+h1 {
+  font-weight: 700;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--pico-font-family-monospace);
+}
+
+/* ---------- Chrome ------------------------------------------------------- */
+
+/* The website has no top bar; the wordmark carries the brand instead. */
+header.container nav {
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  margin-bottom: 1.5rem;
+}
+
+/* The real wordmark from the framework repo rather than a drawn square plus
+   text, so this site cannot drift away from the landing page and the WebUI. */
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: .5rem;
   text-decoration: none;
 }
-.brand::before {
-  content: "";
-  display: inline-block;
-  width: .65rem;
-  height: .65rem;
-  border-radius: 2px;
+
+.brand img {
+  width: auto;
+  height: 1.6rem;
+  display: block;
+}
+
+.brand small {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--pico-muted-color);
+  margin-left: 0.75rem;
+}
+
+header.container nav a:not(.brand) {
+  font-family: var(--brand-display);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+footer.container {
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--pico-muted-border-color);
+  color: var(--pico-muted-color);
+}
+
+#theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+#theme-toggle span {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--pico-muted-color);
+}
+
+#theme-toggle:hover span,
+[data-theme="dark"] #theme-toggle span {
   background: var(--pico-primary);
 }
-header.container nav { padding-top: .5rem; padding-bottom: .5rem; }
 
-/* Eyebrow: a small uppercase label above a page's <h1>, giving every page
-   (not just the home page's hero) a consistent bit of visual hierarchy. */
+/* ---------- Components --------------------------------------------------- */
+
+/* An uppercase mono label above a page's <h1>. Mono because it is a system
+   label, which is the same rule the website follows. */
 .eyebrow {
   display: block;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  font-size: .8rem;
-  font-weight: 700;
-  color: var(--pico-primary);
-  margin-bottom: .25rem;
+  color: var(--pico-muted-color);
+  margin-bottom: 0.5rem;
 }
 
-/* A little breathing room and a subtle rule above each section heading, so
-   a content-heavy page (the skill detail page especially) reads as
-   distinct sections rather than one long scroll. */
 main h2 {
   margin-top: 2.5rem;
-  padding-bottom: .4rem;
+  padding-bottom: 0.4rem;
   border-bottom: 1px solid var(--pico-muted-border-color);
 }
 
-/* Verdict/status pills (Security Audits: PASS/WARN/FAIL/PENDING). Color
-   still comes from each mark's own inline style (the verdict decides it
-   server-side); this just gives every one of them the same pill shape
-   instead of <mark>'s default rectangular highlight. */
+/* Verdict pills (PASS/WARN/FAIL/PENDING). The colour still comes from each
+   mark's inline style, decided server-side; this only fixes the shape. */
 .badge {
   display: inline-block;
-  padding: .15rem .65rem;
+  padding: 0.15rem 0.6rem;
   border-radius: 999px;
-  font-size: .75rem;
-  font-weight: 700;
-  letter-spacing: .02em;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
-/* Home page hero band. */
+/* Hero: a hairline block, not a gradient. The website spends its boldness on
+   one element per page, and a gradient wash is not it. */
 .hero {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--pico-primary) 12%, transparent), transparent 70%);
+  background: var(--pico-card-background-color);
   border: 1px solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius);
-  padding: 2.5rem 2rem;
+  padding: clamp(1.5rem, 4vw, 2.5rem);
   margin-bottom: 2.5rem;
 }
-.hero .eyebrow { margin-bottom: .5rem; }
-.hero h1 { margin-bottom: 1rem; }
-.hero p { max-width: 46rem; }
 
-/* Home page's three-up feature grid. */
-.features article { text-align: center; }
-.features article h3 { margin-bottom: .25rem; }
+.hero .eyebrow {
+  margin-bottom: 0.5rem;
+}
 
-/* Skill directory cards: equal-height with the footer pinned to the
-   bottom (Pico's .grid already stretches each <article> to the row's
-   tallest sibling; without flex the footer just sits wherever the
-   description text ends). A subtle lift on hover ties it to the same
-   "card" language as the home page's feature grid. */
+.hero h1 {
+  margin-bottom: 1rem;
+}
+
+.hero p {
+  max-width: 62ch;
+  color: var(--pico-muted-color);
+}
+
+/* Feature grid: left-aligned like the landing page's pillars. Centred text
+   reads as a marketing template. */
+.features article {
+  text-align: left;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+}
+
+.features article h3 {
+  margin-bottom: 0.25rem;
+  font-size: 1rem;
+}
+
+.features article p {
+  color: var(--pico-muted-color);
+  font-size: 0.9375rem;
+}
+
 .skill-cards > article {
   display: flex;
   flex-direction: column;
-  transition: transform .12s ease, box-shadow .12s ease;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  transition: border-color 0.12s ease;
 }
-.skill-cards > article > p { flex: 1; }
+
+.skill-cards > article > p {
+  flex: 1;
+  color: var(--pico-muted-color);
+  font-size: 0.9375rem;
+}
+
 .skill-cards > article:has(a:hover) {
-  transform: translateY(-2px);
-  box-shadow: var(--pico-card-box-shadow, 0 4px 12px rgba(0, 0, 0, .08));
+  border-color: var(--pico-primary);
+}
+
+/* Skill ids, versions and hashes are identifiers, so they are set in mono
+   wherever they appear in a card or a table. */
+.skill-cards code,
+table code {
+  font-size: 0.8125rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
 }
