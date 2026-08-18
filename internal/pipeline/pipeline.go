@@ -66,6 +66,16 @@ type Result struct {
 	Entries            []Entry
 	Metadata           Metadata
 	TotalUnpackedBytes int64
+	// Kind is KindSkill for a bare SKILL.md archive or KindAgentPlugin for an
+	// Agent Plugins v1 package. Presence of a root plugin.json selects it.
+	Kind string
+	// Skills names the skills an Agent Plugin package declares. Empty for a
+	// plain skill archive, whose single skill is Metadata.Name.
+	Skills []string
+	// MCPServers names the MCP servers an Agent Plugin package declares.
+	// Non-empty means approving this package approves code execution, so the
+	// review surface has to show it.
+	MCPServers []string
 }
 
 // ValidationError is a safe, user-facing description of why an archive was
@@ -108,6 +118,19 @@ func ValidateArchive(archivePath string, expectedSkillID string) (*Result, error
 		return nil, err
 	}
 
+	// Path safety above applies to every archive before the shape is considered,
+	// so a package gets the same treatment a bare skill does. A root plugin.json
+	// then selects the Agent Plugins path; its absence changes nothing.
+	if _, pluginErr := findFile(&reader.Reader, RootPluginFile); pluginErr == nil {
+		result, err := validatePluginPackage(&reader.Reader, expectedSkillID)
+		if err != nil {
+			return nil, err
+		}
+		result.Entries = entries
+		result.TotalUnpackedBytes = total
+		return result, nil
+	}
+
 	skillMDFile, err := findFile(&reader.Reader, RootSkillFile)
 	if err != nil {
 		return nil, err
@@ -128,7 +151,12 @@ func ValidateArchive(archivePath string, expectedSkillID string) (*Result, error
 		)
 	}
 
-	return &Result{Entries: entries, Metadata: meta, TotalUnpackedBytes: total}, nil
+	return &Result{
+		Entries:            entries,
+		Metadata:           meta,
+		TotalUnpackedBytes: total,
+		Kind:               KindSkill,
+	}, nil
 }
 
 // validatedEntries walks every entry in the archive and rejects it outright
@@ -178,8 +206,17 @@ func validatedEntries(reader *zip.Reader) ([]Entry, int64, error) {
 		entries = append(entries, Entry{Name: normalized, Size: size})
 	}
 
-	if _, ok := seen[RootSkillFile]; !ok {
-		return nil, 0, fail("archive does not contain a root %s", RootSkillFile)
+	// An archive is one of two shapes, and this is the earliest point that can tell
+	// them apart: a bare skill has a root SKILL.md, an Agent Plugins package has a
+	// root plugin.json. Requiring SKILL.md unconditionally here rejected every
+	// package before the shape was ever considered.
+	_, hasSkill := seen[RootSkillFile]
+	_, hasPlugin := seen[RootPluginFile]
+	if !hasSkill && !hasPlugin {
+		return nil, 0, fail(
+			"archive does not contain a root %s or a root %s",
+			RootSkillFile, RootPluginFile,
+		)
 	}
 	return entries, total, nil
 }
@@ -297,3 +334,4 @@ func readEntryLimited(f *zip.File, limit int64) ([]byte, error) {
 	}
 	return data, nil
 }
+
