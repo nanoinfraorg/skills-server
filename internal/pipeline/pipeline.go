@@ -334,4 +334,3 @@ func readEntryLimited(f *zip.File, limit int64) ([]byte, error) {
 	}
 	return data, nil
 }
-
