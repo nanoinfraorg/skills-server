@@ -1,4 +1,8 @@
 {{define "content"}}
+{{/* Refreshes only while something is publishing, and only then: a dashboard
+     that reloaded every few seconds regardless would fight an admin typing a
+     rejection reason. */}}
+{{if .AnyPublishing}}<meta http-equiv="refresh" content="4">{{end}}
 <p class="eyebrow">Admin</p>
 <h1>Admin dashboard</h1>
 
@@ -37,15 +41,22 @@
           {{end}}
         </td>
         <td>
-          <form method="post" action="/admin/submissions/{{.ID}}/approve" style="display:inline">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit">Approve</button>
-          </form>
-          <form method="post" action="/admin/submissions/{{.ID}}/reject" style="display:inline">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <input type="text" name="reason" placeholder="Reason" required style="width: 10rem; display: inline-block;">
-            <button type="submit" class="secondary">Reject</button>
-          </form>
+          {{if .Publishing}}
+            {{/* The decision is taken and the work is running. Buttons here
+                 would be buttons that can do nothing: the claim is a
+                 conditional update, so a second approve is refused anyway. */}}
+            <span class="publishing" aria-live="polite">Publishing&hellip;</span>
+          {{else}}
+            <form method="post" action="/admin/submissions/{{.ID}}/approve" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <button type="submit">Approve</button>
+            </form>
+            <form method="post" action="/admin/submissions/{{.ID}}/reject" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="text" name="reason" placeholder="Reason" required style="width: 10rem; display: inline-block;">
+              <button type="submit" class="secondary">Reject</button>
+            </form>
+          {{end}}
         </td>
       </tr>
     {{end}}

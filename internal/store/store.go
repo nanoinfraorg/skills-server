@@ -317,6 +317,69 @@ func (s *Store) DecideSubmission(ctx context.Context, id string, status Submissi
 	return nil
 }
 
+// GetSkillVersionBySubmission finds the version row one submission produced, if
+// it produced one.
+//
+// The reconciler's question after a crash: the version row is the commit point of
+// a publish, so its existence is what distinguishes "finished but never recorded
+// as approved" from "never published at all".
+func (s *Store) GetSkillVersionBySubmission(ctx context.Context, submissionID string) (*SkillVersion, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks, kind
+		FROM skill_versions WHERE submission_id = ? ORDER BY id DESC LIMIT 1`, submissionID)
+	sv, err := scanSkillVersion(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query skill version by submission: %w", err)
+	}
+	return sv, nil
+}
+
+// ClaimSubmissionForPublish moves one pending submission to `publishing` and
+// reports whether this caller is the one that got it.
+//
+// The `WHERE status = 'pending'` is the whole mechanism: two admins clicking the
+// same row, or one clicking twice, produce one claim and one publish. A caller
+// that gets `false` did not lose data -- somebody else is already publishing it.
+func (s *Store) ClaimSubmissionForPublish(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE submissions SET status = ? WHERE id = ? AND status = ?`,
+		string(StatusPublishing), id, string(StatusPending),
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim submission: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// ReleaseSubmissionClaim puts a claimed submission back to `pending`.
+//
+// For the case where the work could not start at all -- not for a failure during
+// it, which is a rejection with a reason. A row left in `publishing` by a crash
+// is recovered by ReconcilePublishing at startup instead.
+func (s *Store) ReleaseSubmissionClaim(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE submissions SET status = ? WHERE id = ? AND status = ?`,
+		string(StatusPending), id, string(StatusPublishing),
+	)
+	if err != nil {
+		return fmt.Errorf("release submission claim: %w", err)
+	}
+	return nil
+}
+
+// ListPublishingSubmissions returns every submission left mid-publish, for the
+// startup reconciler.
+func (s *Store) ListPublishingSubmissions(ctx context.Context) ([]Submission, error) {
+	return s.ListSubmissions(ctx, string(StatusPublishing))
+}
+
 // MaxVersion returns the highest published version number for skillID, or 0
 // if it has never been published. The next publish should use
 // MaxVersion+1.

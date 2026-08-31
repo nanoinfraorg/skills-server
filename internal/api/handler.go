@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -46,6 +47,14 @@ func withSessionEmail(r *http.Request, email string) *http.Request {
 func sessionEmailFromContext(ctx context.Context) (string, bool) {
 	email, ok := ctx.Value(sessionEmailContextKey).(string)
 	return email, ok && email != ""
+}
+
+// TrackBackgroundPublishes makes the handler track its background publishes in
+// wg, so a test can wait for one to finish. Production leaves this unset: a
+// publish that outlives the process is recovered by ReconcilePublishing, which
+// is a better guarantee than a shutdown that blocks on a GitHub call.
+func (h *Handler) TrackBackgroundPublishes(wg *sync.WaitGroup) {
+	h.publishWaitGroup = wg
 }
 
 // Publisher commits a skill's validated files to the durable GitHub artifact
@@ -86,6 +95,12 @@ type Handler struct {
 	// SessionTTL is how long a Google-OAuth-issued session cookie remains
 	// valid.
 	SessionTTL time.Duration
+	// publishWaitGroup tracks background publishes so a test can wait for one
+	// and a shutdown can drain them. Unexported: nothing outside this package
+	// sets it, and a nil one means "do not track", which is what production
+	// uses -- a publish that outlives the process is recovered by
+	// ReconcilePublishing rather than by blocking the exit.
+	publishWaitGroup *sync.WaitGroup
 	// PublicBaseURL, when non-empty, is the externally-visible scheme+host
 	// this server is reachable at (see internal/config.Config.PublicBaseURL
 	// for the full reverse-proxy rationale). GoogleCallback uses its scheme

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1034,6 +1035,8 @@ func TestAdmin_RequiresAdminRoleNotJustAnySession(t *testing.T) {
 
 func TestAdmin_ApproveHappyPathCallsThroughToPublish(t *testing.T) {
 	h, apiHandler, pub := testHandler(t)
+	var publishes sync.WaitGroup
+	apiHandler.TrackBackgroundPublishes(&publishes)
 	mux := newMux(h)
 	cookie := seedSession(t, apiHandler, "sub@example.com", store.SessionRoleSubmitter, "csrf-sub")
 	adminCookie := seedSession(t, apiHandler, "admin@example.com", store.SessionRoleAdmin, "csrf-admin")
@@ -1061,10 +1064,14 @@ func TestAdmin_ApproveHappyPathCallsThroughToPublish(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve status = %d, want 303, body: %s", rec.Code, rec.Body.String())
 	}
+	// The button returns as soon as the row is claimed: the scan and the GitHub
+	// publish run behind it, which is the point -- the request used to stay open
+	// for an LLM call and a GitHub round trip, ten times for ten approvals.
 	loc := rec.Header().Get("Location")
-	if !strings.Contains(loc, "outcome=published") {
-		t.Errorf("Location = %q, want an outcome=published redirect", loc)
+	if !strings.Contains(loc, "outcome=publishing") {
+		t.Errorf("Location = %q, want an outcome=publishing redirect", loc)
 	}
+	publishes.Wait()
 
 	if pub.calls != 1 {
 		t.Errorf("expected 1 publish call, got %d", pub.calls)

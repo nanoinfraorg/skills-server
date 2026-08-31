@@ -110,6 +110,12 @@ func main() {
 		VirusTotalClient:  vtClient,
 	}
 
+	// A crash between an approval's claim and its outcome leaves a submission in
+	// `publishing` with nobody working on it, and such a row would sit in the
+	// dashboard forever. Recovered before the server accepts a request, because
+	// the first thing an admin does is look at that list.
+	handler.ReconcilePublishing(ctx)
+
 	go scheduler.Run(ctx, cfg.DailyScanInterval, scheduler.Deps{
 		Store:            db,
 		Logger:           logger,

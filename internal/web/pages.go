@@ -898,7 +898,7 @@ func (h *Handler) MySubmissions(w http.ResponseWriter, r *http.Request) {
 // message store in this codebase and one action's outcome doesn't need to
 // survive more than the one redirect.
 type outcomeBanner struct {
-	Kind    string // "published", "rejected", "rescanned", or "error"
+	Kind    string // "published", "publishing", "rejected", "rescanned", or "error"
 	Message string
 }
 
@@ -909,6 +909,14 @@ func outcomeFromQuery(q url.Values) *outcomeBanner {
 			"Published %s v%s (scan verdict: %s).", q.Get("skill_id"), q.Get("version"), q.Get("scan_verdict"))}
 	case "rejected":
 		return &outcomeBanner{Kind: "rejected", Message: "Rejected: " + q.Get("reason")}
+	case "publishing":
+		// Deliberately not "Published": the work is running, and a banner that
+		// claimed otherwise would be wrong for the seconds that matter.
+		return &outcomeBanner{
+			Kind: "publishing",
+			Message: "Publishing in the background. The row leaves Pending when it finishes, " +
+				"or comes back with a reason if it did not.",
+		}
 	case "rescanned":
 		status := "still published"
 		if q.Get("quarantined") == "true" {
@@ -932,7 +940,11 @@ func redirectWithOutcome(w http.ResponseWriter, r *http.Request, q url.Values) {
 // any has run yet), for the dashboard's "view scan reports" requirement.
 type adminSubmissionRow struct {
 	submissionRow
-	Scan *store.Scan
+	// Publishing is true while the background work runs. Such a row shows its
+	// state instead of approve/reject buttons: the decision is already taken,
+	// and a second click on it is a click that can do nothing.
+	Publishing bool
+	Scan       *store.Scan
 	// What approving this submission would allow, read from the archive itself.
 	// Nil when the archive could not be read -- the row still renders, because
 	// an unreadable archive is a thing an admin needs to see rather than a
@@ -947,6 +959,9 @@ type adminPageData struct {
 	Outcome   *outcomeBanner
 	Pending   []adminSubmissionRow
 	Skills    []store.SkillDetail
+	// AnyPublishing drives a short meta-refresh, so a row that finishes in the
+	// background stops being stale without the admin reloading by hand.
+	AnyPublishing bool
 }
 
 // Admin renders "/admin": pending submissions (each with its latest scan
@@ -967,9 +982,20 @@ func (h *Handler) Admin(w http.ResponseWriter, r *http.Request) {
 		h.renderMessage(w, http.StatusInternalServerError, sess, "Error", "Could not load pending submissions.")
 		return
 	}
+	// The rows mid-publish belong on this page too. Without them an approved
+	// submission vanishes for the seconds the work takes and reappears only if
+	// it failed, which reads as "did my click land?".
+	publishing, err := h.API.Store.ListPublishingSubmissions(ctx)
+	if err != nil {
+		h.Logger.Error("list publishing submissions", "error", err)
+	}
+	pending = append(publishing, pending...)
 	rows := make([]adminSubmissionRow, 0, len(pending))
 	for _, sub := range pending {
-		row := adminSubmissionRow{submissionRow: toSubmissionRow(sub)}
+		row := adminSubmissionRow{
+			submissionRow: toSubmissionRow(sub),
+			Publishing:    sub.Status == store.StatusPublishing,
+		}
 		// Re-read from the pending archive rather than from a stored summary:
 		// the archive is what would be published, and a summary can drift.
 		if result, err := pipeline.ValidateArchive(sub.ArchivePath, ""); err == nil {
@@ -994,11 +1020,12 @@ func (h *Handler) Admin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, http.StatusOK, "admin.html", adminPageData{
-		basePage:  basePage{Title: "Admin dashboard", User: navUser(sess)},
-		CSRFToken: sess.CSRFToken,
-		Outcome:   outcomeFromQuery(r.URL.Query()),
-		Pending:   rows,
-		Skills:    skills,
+		basePage:      basePage{Title: "Admin dashboard", User: navUser(sess)},
+		CSRFToken:     sess.CSRFToken,
+		Outcome:       outcomeFromQuery(r.URL.Query()),
+		Pending:       rows,
+		Skills:        skills,
+		AnyPublishing: len(publishing) > 0,
 	})
 }
 
@@ -1017,19 +1044,15 @@ func (h *Handler) AdminApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, subErr := h.API.ApproveSubmissionCore(r.Context(), r.PathValue("id"))
-	if subErr != nil {
+	// Claims the row and returns. The scan and the GitHub publish run behind
+	// it, so approving ten submissions is ten clicks rather than ten waits --
+	// the request used to stay open for an LLM call with a 30-second timeout
+	// followed by a GitHub round trip.
+	if _, subErr := h.API.ApproveSubmissionAsync(r.Context(), r.PathValue("id")); subErr != nil {
 		redirectWithOutcome(w, r, url.Values{"outcome": {"error"}, "message": {subErr.Message}})
 		return
 	}
-	if outcome.Published {
-		redirectWithOutcome(w, r, url.Values{
-			"outcome": {"published"}, "skill_id": {outcome.SkillID},
-			"version": {strconv.FormatInt(outcome.Version, 10)}, "scan_verdict": {string(outcome.ScanVerdict)},
-		})
-		return
-	}
-	redirectWithOutcome(w, r, url.Values{"outcome": {"rejected"}, "reason": {outcome.Reason}})
+	redirectWithOutcome(w, r, url.Values{"outcome": {"publishing"}})
 }
 
 // AdminReject handles "/admin/submissions/{id}/reject" (POST): CSRF-checks

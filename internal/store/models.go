@@ -6,9 +6,18 @@ import "time"
 type SubmissionStatus string
 
 const (
-	StatusPending  SubmissionStatus = "pending"
-	StatusApproved SubmissionStatus = "approved"
-	StatusRejected SubmissionStatus = "rejected"
+	StatusPending SubmissionStatus = "pending"
+	// StatusPublishing is claimed by an approval and held while the work runs:
+	// the scan, the GitHub publish, and the rows that follow. It exists so the
+	// approve button can return at once instead of holding the request open for
+	// an LLM call and a GitHub round trip -- approving ten things one after the
+	// other used to mean watching a spinner ten times.
+	//
+	// It is also the lock. The claim is a conditional UPDATE from `pending`, so
+	// two clicks on the same row cannot both publish it.
+	StatusPublishing SubmissionStatus = "publishing"
+	StatusApproved   SubmissionStatus = "approved"
+	StatusRejected   SubmissionStatus = "rejected"
 )
 
 // Submission is one uploaded candidate skill, pending or decided.

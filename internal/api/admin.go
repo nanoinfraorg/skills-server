@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nanoinfraorg/skills-server/internal/github"
 	"github.com/nanoinfraorg/skills-server/internal/pipeline"
@@ -98,6 +99,180 @@ func (h *Handler) ApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// scanForApproval returns the verdict to publish under, reusing a scan already
+// recorded against this submission when there is one.
+//
+// Returns a non-empty reason when the verdict blocks. The reason comes from a
+// freshly-run report when this call ran one, and from the stored row otherwise --
+// a stored row holds the findings that produced its verdict, so the rejection
+// still says why rather than just "blocked".
+func (h *Handler) scanForApproval(
+	ctx context.Context,
+	id string,
+	sub *store.Submission,
+	files []pipeline.FileContent,
+	trigger store.ScanTrigger,
+) (scan.Verdict, string, *SubmissionError) {
+	if existing, err := h.Store.GetLatestScan(ctx, store.ScanTargetSubmission, sub.ID); err == nil {
+		h.Logger.Info("reusing the scan already recorded for this submission",
+			"id", id, "skill_id", sub.SkillID, "verdict", existing.Verdict)
+		reused := scan.Verdict(existing.Verdict)
+		if reused == scan.VerdictBlocked {
+			return reused, "security scan blocked this submission (see its scan report)", nil
+		}
+		return reused, "", nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		h.Logger.Error("look for an existing scan", "error", err)
+		return "", "", &SubmissionError{http.StatusInternalServerError, "could not read this submission's scan"}
+	}
+
+	report := scan.Run(ctx, files, h.ScanConfig)
+	scanRow, err := scan.BuildScanRow(report, store.ScanTargetSubmission, sub.ID, trigger, h.now())
+	if err != nil {
+		h.Logger.Error("build scan row", "error", err)
+		return "", "", &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
+	}
+	if _, err := h.Store.CreateScan(ctx, scanRow); err != nil {
+		h.Logger.Error("record scan", "error", err)
+		return "", "", &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
+	}
+	if report.Verdict == scan.VerdictBlocked {
+		return report.Verdict, summarizeBlockedScan(report), nil
+	}
+	return report.Verdict, "", nil
+}
+
+// publishTimeout bounds one background publish. Generous rather than absent: a
+// hung LLM or GitHub call would otherwise leave the row in `publishing` until a
+// restart, and the LLM client alone allows 30 seconds.
+const publishTimeout = 5 * time.Minute
+
+// ApproveSubmissionAsync claims a pending submission and does the work in the
+// background, so the caller's request returns at once.
+//
+// Approving used to hold the request open for the whole pipeline: an LLM
+// classification with a 30-second client timeout, then a GitHub publish.
+// Approving ten submissions meant watching that ten times, which is the reason
+// this exists.
+//
+// The claim is a conditional UPDATE from `pending`, so it is also the lock: two
+// clicks produce one publish. A caller that does not get the claim is told the
+// submission is already being published rather than being handed a second one.
+//
+// Errors during the work are not lost. Every failure path inside
+// ApproveSubmissionCore already ends in a rejection with a reason or a logged
+// server error, and the row leaves `publishing` either way -- the one case that
+// does not is a crash mid-publish, which ReconcilePublishing recovers at
+// startup.
+func (h *Handler) ApproveSubmissionAsync(ctx context.Context, id string) (bool, *SubmissionError) {
+	sub, err := h.Store.GetSubmission(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, &SubmissionError{http.StatusNotFound, "submission not found"}
+	}
+	if err != nil {
+		h.Logger.Error("get submission", "error", err)
+		return false, &SubmissionError{http.StatusInternalServerError, "could not load submission"}
+	}
+	if sub.Status != store.StatusPending {
+		return false, &SubmissionError{
+			http.StatusConflict,
+			fmt.Sprintf("submission is already %s", sub.Status),
+		}
+	}
+
+	claimed, err := h.Store.ClaimSubmissionForPublish(ctx, id)
+	if err != nil {
+		h.Logger.Error("claim submission for publish", "error", err)
+		return false, &SubmissionError{http.StatusInternalServerError, "could not start publishing"}
+	}
+	if !claimed {
+		return false, &SubmissionError{
+			http.StatusConflict,
+			"this submission is already being published",
+		}
+	}
+
+	h.publishInBackground(id, sub.SkillID)
+	return true, nil
+}
+
+// publishInBackground runs one claimed publish and records what happened.
+//
+// A background context, not the request's: the caller's connection closing must
+// not cancel a GitHub publish halfway. The deadline is generous rather than
+// absent, because a hung LLM or GitHub call would otherwise leave the row in
+// `publishing` until a restart.
+func (h *Handler) publishInBackground(id, skillID string) {
+	if h.publishWaitGroup != nil {
+		h.publishWaitGroup.Add(1)
+	}
+	go func() {
+		if h.publishWaitGroup != nil {
+			defer h.publishWaitGroup.Done()
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), publishTimeout)
+		defer cancel()
+
+		outcome, subErr := h.ApproveSubmissionCore(ctx, id)
+		switch {
+		case subErr != nil:
+			h.Logger.Error("background publish failed", "id", id, "skill_id", skillID,
+				"status", subErr.Status, "message", subErr.Message)
+			// Nothing was published, so the row goes back to pending: that is the
+			// truthful state, and an admin can try again once the cause is fixed.
+			// Left in `publishing` it would need a restart to become actionable.
+			if err := h.Store.ReleaseSubmissionClaim(ctx, id); err != nil {
+				h.Logger.Error("return a failed publish to pending", "error", err, "id", id)
+			}
+		case !outcome.Published:
+			h.Logger.Info("background publish rejected the submission", "id", id,
+				"skill_id", skillID, "reason", outcome.Reason)
+		default:
+			h.Logger.Info("background publish complete", "id", id, "skill_id", skillID,
+				"version", outcome.Version, "scan_verdict", outcome.ScanVerdict)
+		}
+	}()
+}
+
+// ReconcilePublishing puts every submission left mid-publish back where it
+// belongs, at startup.
+//
+// A crash between the claim and the outcome leaves a row in `publishing` with
+// nobody working on it, and such a row would sit in the dashboard forever. The
+// version row is the commit point: if one exists for this submission the publish
+// finished and the row is approved, and if it does not, nothing was published
+// and the row goes back to pending.
+func (h *Handler) ReconcilePublishing(ctx context.Context) {
+	stuck, err := h.Store.ListPublishingSubmissions(ctx)
+	if err != nil {
+		h.Logger.Error("list submissions left mid-publish", "error", err)
+		return
+	}
+	for _, sub := range stuck {
+		version, err := h.Store.GetSkillVersionBySubmission(ctx, sub.ID)
+		if err == nil && version != nil {
+			reason := ""
+			if decideErr := h.Store.DecideSubmission(ctx, sub.ID, store.StatusApproved, &reason, h.now()); decideErr != nil {
+				h.Logger.Error("recover a finished publish", "error", decideErr, "id", sub.ID)
+				continue
+			}
+			h.Logger.Warn("recovered a publish that finished before a restart",
+				"id", sub.ID, "skill_id", sub.SkillID, "version", version.Version)
+			continue
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			h.Logger.Error("check for a published version", "error", err, "id", sub.ID)
+			continue
+		}
+		if err := h.Store.ReleaseSubmissionClaim(ctx, sub.ID); err != nil {
+			h.Logger.Error("return a stuck submission to pending", "error", err, "id", sub.ID)
+			continue
+		}
+		h.Logger.Warn("returned a submission left mid-publish to pending",
+			"id", sub.ID, "skill_id", sub.SkillID)
+	}
+}
+
 // ApproveSubmissionCore is the implementation shared by ApproveSubmission
 // (the JSON API) and the HTML admin dashboard's approve action
 // (internal/web); see ApproveSubmission's doc comment for the full
@@ -111,7 +286,15 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 		h.Logger.Error("get submission", "error", err)
 		return nil, &SubmissionError{http.StatusInternalServerError, "could not load submission"}
 	}
-	if sub.Status != store.StatusPending {
+	// `publishing` is accepted as well as `pending`, because the async path claims
+	// the row *before* calling this and must not let go of it.
+	//
+	// An earlier version released the claim here so this shared check would pass,
+	// and a concurrency test caught what that opened: goroutine A claimed,
+	// released, and goroutine B claimed the same row -- two publishes from two
+	// clicks, which is the exact thing the claim exists to prevent. The claim is
+	// a lock, so it is held until the outcome.
+	if sub.Status != store.StatusPending && sub.Status != store.StatusPublishing {
 		return nil, &SubmissionError{http.StatusConflict, fmt.Sprintf("submission is already %s", sub.Status)}
 	}
 
@@ -137,20 +320,24 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 		trigger = store.ScanTriggerOnUpdate
 	}
 
-	report := scan.Run(ctx, files, h.ScanConfig)
-	scanRow, err := scan.BuildScanRow(report, store.ScanTargetSubmission, sub.ID, trigger, h.now())
-	if err != nil {
-		h.Logger.Error("build scan row", "error", err)
-		return nil, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
+	// A submission's archive is written once and never modified, so a scan
+	// already recorded against it describes these exact bytes. Re-running it
+	// here paid for a second LLM call over the same content -- and the verdict
+	// an admin reads in the dashboard's Scan column, immediately before
+	// clicking approve, came from that first scan. So the second one told
+	// nobody anything and cost the wait.
+	//
+	// A blocked verdict still blocks, whichever scan produced it. With no
+	// recorded scan the pipeline runs one, so "nothing publishes unscanned"
+	// holds either way.
+	verdict, blockedReason, subErr := h.scanForApproval(ctx, id, sub, files, trigger)
+	if subErr != nil {
+		return nil, subErr
 	}
-	if _, err := h.Store.CreateScan(ctx, scanRow); err != nil {
-		h.Logger.Error("record scan", "error", err)
-		return nil, &SubmissionError{http.StatusInternalServerError, "scan completed but could not be recorded"}
+	if blockedReason != "" {
+		return h.autoReject(ctx, id, sub, blockedReason)
 	}
-
-	if report.Verdict == scan.VerdictBlocked {
-		return h.autoReject(ctx, id, sub, summarizeBlockedScan(report))
-	}
+	report := scan.Report{Verdict: verdict}
 
 	version, err := h.Store.MaxVersion(ctx, sub.SkillID)
 	if err != nil {

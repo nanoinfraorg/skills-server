@@ -608,3 +608,12 @@ pre {
     animation-duration: 0.001ms !important;
   }
 }
+
+/* A row whose decision is taken and whose work is running. Not a spinner: the
+   page refreshes itself while any row is in this state, so movement would be
+   decoration on top of a thing that already updates. */
+.publishing {
+  color: var(--pico-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
