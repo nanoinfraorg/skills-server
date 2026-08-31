@@ -110,6 +110,12 @@ type SkillDetail struct {
 	// the same name -- see SkillVersion's doc comment.
 	Owner string
 	Risks string
+	// Kind mirrors the current version's SkillVersion.Kind. On the public
+	// directory it is the answer to "what am I installing": a skill is text
+	// the agent reads, a connector declares requests made with a live
+	// credential. Storing it on the row is what lets the listing say so
+	// without opening an archive per search result.
+	Kind string
 }
 
 // SessionRole is the privilege level of an authenticated Google OAuth

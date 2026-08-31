@@ -1,7 +1,18 @@
 {{define "content"}}
-<p class="eyebrow">Skill</p>
+{{/* The eyebrow names the kind, because "Skill" on a connector's page would be
+     the page telling a reader the wrong thing about what they are installing. */}}
+<p class="eyebrow">{{if eq .Skill.Kind "connector"}}Connector{{else if eq .Skill.Kind "agent-plugin"}}Agent Plugin{{else}}Skill{{end}}</p>
 <h1>{{.Skill.DisplayName}}</h1>
 <p><code>{{.Skill.SkillID}}</code> &middot; current version v{{.Skill.Version}}</p>
+
+{{if eq .Skill.Kind "connector"}}
+  <p><mark>This is a connector.</mark> Installing it writes a declaration of the
+  requests it may make. It does nothing until you enable it in config and bind a
+  credential — and it can only address the hosts that credential names.</p>
+{{else if eq .Skill.Kind "agent-plugin"}}
+  <p><mark>This is an Agent Plugin.</mark> It may declare an MCP server, which
+  means approving it can mean approving code execution.</p>
+{{end}}
 
 {{if eq .Skill.Status "quarantined"}}
   <p><mark>This skill's current version has been quarantined by the security scan shield and is not available for download.</mark></p>

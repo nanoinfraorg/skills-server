@@ -68,6 +68,10 @@ type skillDTO struct {
 	GitHubPath     string `json:"github_path"`
 	Downloads      int64  `json:"downloads"`
 	CreatedAt      string `json:"created_at"`
+	// What a reader is installing: "skill", "agent-plugin" or "connector".
+	// Omitted for a row published before the kinds existed, which a client
+	// reads as a plain skill -- which is what those rows are.
+	Kind string `json:"kind,omitempty"`
 }
 
 func toSkillDTO(s store.SkillDetail) skillDTO {
@@ -81,6 +85,7 @@ func toSkillDTO(s store.SkillDetail) skillDTO {
 		GitHubPath:     s.GitHubPath,
 		Downloads:      s.Downloads,
 		CreatedAt:      s.CreatedAt.UTC().Format(time.RFC3339),
+		Kind:           s.Kind,
 	}
 }
 

@@ -439,6 +439,27 @@ main h2 {
   color: var(--pico-muted-color);
 }
 
+/* What a reader is installing, when it is not the default. A connector gets the
+   stronger colour because approving one is approving requests made with a live
+   credential -- an Agent Plugin may run code, which is also worth a mark, but a
+   package that holds a token is the one to notice first. */
+.directory__kind {
+  margin-inline-start: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 0.7rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--pico-muted-color);
+  vertical-align: 0.1rem;
+}
+
+.directory__kind--connector {
+  border-color: currentColor;
+  color: var(--pico-primary);
+}
+
 .directory__desc {
   display: block;
   margin-block-start: 0.15rem;

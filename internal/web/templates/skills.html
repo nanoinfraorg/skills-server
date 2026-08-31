@@ -41,6 +41,14 @@
           <td>
             <a href="/skills/{{.SkillID}}"><strong>{{.DisplayName}}</strong></a>
             <code class="directory__id">{{.SkillID}}</code>
+            {{/* A skill is text the agent reads; a connector declares requests
+                 a deployment will make with a live credential; an Agent Plugin
+                 may run code. The listing has to say which one, so the badge
+                 appears for everything except a plain skill -- which is the
+                 default a reader already assumes on a page called Skills. */}}
+            {{if and .Kind (ne .Kind "skill")}}
+              <span class="directory__kind directory__kind--{{.Kind}}">{{.Kind}}</span>
+            {{end}}
             {{/* One line with an ellipsis; the full text is in the title
                  attribute and on the detail page. */}}
             <span class="directory__desc" title="{{.Description}}">{{.Description}}</span>

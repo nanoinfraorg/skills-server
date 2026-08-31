@@ -470,7 +470,8 @@ func (s *Store) GetSkill(ctx context.Context, skillID string) (*Skill, error) {
 // current skill_versions row.
 const skillDetailColumns = `
 		s.skill_id, sv.display_name, sv.description, sv.version, sv.submission_id,
-		sv.github_path, sv.published_at, sv.status, s.downloads, s.created_at, sv.owner, sv.risks`
+		sv.github_path, sv.published_at, sv.status, s.downloads, s.created_at, sv.owner, sv.risks,
+		sv.kind`
 
 const skillDetailFrom = `
 		FROM skills s
@@ -919,6 +920,7 @@ func scanSkillDetail(row rowScanner) (*SkillDetail, error) {
 	if err := row.Scan(
 		&sd.SkillID, &sd.DisplayName, &sd.Description, &sd.Version, &sd.SubmissionID,
 		&sd.GitHubPath, &publishedAt, &status, &sd.Downloads, &createdAt, &sd.Owner, &sd.Risks,
+		&sd.Kind,
 	); err != nil {
 		return nil, err
 	}
