@@ -76,6 +76,54 @@ type Result struct {
 	// Non-empty means approving this package approves code execution, so the
 	// review surface has to show it.
 	MCPServers []string
+	// The four connector fields, empty for every other kind. Approving a
+	// connector is approving requests a deployment will make with a live
+	// credential, so all four belong on the review screen: what the operations
+	// are allowed to do, where a token could go, and what it would carry.
+	ConnectorOperations []string
+	ConnectorClasses    []string
+	ConnectorHosts      []string
+	ConnectorScopes     []string
+}
+
+// Grants describes what approving one archive would allow, for the review
+// screen. It is derived from a Result rather than stored, because the archive is
+// the authority and a stored summary can drift from it.
+//
+// A skill grants text the agent reads. An Agent Plugin may also declare MCP
+// servers, which is code execution. A connector declares *requests a deployment
+// will make with a live credential* -- so its operations carry a capability
+// class each, its hosts say where a token could go, and its scopes say what that
+// token would carry. An approver who sees only a name sees none of that.
+type Grants struct {
+	Kind       string
+	Lines      []string
+	Classes    []string
+	Hosts      []string
+	Scopes     []string
+	MCPServers []string
+}
+
+// Describe reports what approving this archive would allow.
+func (r *Result) Describe() Grants {
+	switch r.Kind {
+	case KindConnector:
+		return Grants{
+			Kind:    KindConnector,
+			Lines:   r.ConnectorOperations,
+			Classes: r.ConnectorClasses,
+			Hosts:   r.ConnectorHosts,
+			Scopes:  r.ConnectorScopes,
+		}
+	case KindAgentPlugin:
+		lines := make([]string, 0, len(r.Skills))
+		for _, name := range r.Skills {
+			lines = append(lines, "skill "+name)
+		}
+		return Grants{Kind: KindAgentPlugin, Lines: lines, MCPServers: r.MCPServers}
+	default:
+		return Grants{Kind: KindSkill, Lines: []string{"skill " + r.Metadata.Name}}
+	}
 }
 
 // ValidationError is a safe, user-facing description of why an archive was
@@ -119,8 +167,24 @@ func ValidateArchive(archivePath string, expectedSkillID string) (*Result, error
 	}
 
 	// Path safety above applies to every archive before the shape is considered,
-	// so a package gets the same treatment a bare skill does. A root plugin.json
-	// then selects the Agent Plugins path; its absence changes nothing.
+	// so a package gets the same treatment a bare skill does. A root
+	// connector.json selects the connector path and a root plugin.json selects
+	// the Agent Plugins one; the absence of both changes nothing.
+	//
+	// Connector first, because a connector package may also ship a SKILL.md --
+	// its own skill lives inside the package the way a first-party connector's
+	// does -- and the kind a reader is installing is decided by the manifest
+	// that grants a credential, not by the text beside it.
+	if _, connectorErr := findFile(&reader.Reader, RootConnectorFile); connectorErr == nil {
+		result, err := validateConnectorPackage(&reader.Reader, expectedSkillID)
+		if err != nil {
+			return nil, err
+		}
+		result.Entries = entries
+		result.TotalUnpackedBytes = total
+		return result, nil
+	}
+
 	if _, pluginErr := findFile(&reader.Reader, RootPluginFile); pluginErr == nil {
 		result, err := validatePluginPackage(&reader.Reader, expectedSkillID)
 		if err != nil {
@@ -206,16 +270,19 @@ func validatedEntries(reader *zip.Reader) ([]Entry, int64, error) {
 		entries = append(entries, Entry{Name: normalized, Size: size})
 	}
 
-	// An archive is one of two shapes, and this is the earliest point that can tell
-	// them apart: a bare skill has a root SKILL.md, an Agent Plugins package has a
-	// root plugin.json. Requiring SKILL.md unconditionally here rejected every
-	// package before the shape was ever considered.
+	// An archive is one of three shapes, and this is the earliest point that can
+	// tell them apart: a bare skill has a root SKILL.md, an Agent Plugins package
+	// has a root plugin.json, and a connector package has a root connector.json.
+	// Requiring SKILL.md unconditionally here rejected every package before the
+	// shape was ever considered -- and it did so again when the third kind
+	// arrived, which is why the list is spelled out rather than defaulted.
 	_, hasSkill := seen[RootSkillFile]
 	_, hasPlugin := seen[RootPluginFile]
-	if !hasSkill && !hasPlugin {
+	_, hasConnector := seen[RootConnectorFile]
+	if !hasSkill && !hasPlugin && !hasConnector {
 		return nil, 0, fail(
-			"archive does not contain a root %s or a root %s",
-			RootSkillFile, RootPluginFile,
+			"archive does not contain a root %s, a root %s or a root %s",
+			RootSkillFile, RootPluginFile, RootConnectorFile,
 		)
 	}
 	return entries, total, nil

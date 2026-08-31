@@ -9,7 +9,7 @@
 <h2>Pending submissions</h2>
 {{if .Pending}}
   <table>
-    <thead><tr><th>Skill</th><th>Display name</th><th>Submitter</th><th>Submitted</th><th>Scan</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Skill</th><th>Display name</th><th>Submitter</th><th>Submitted</th><th>Grants</th><th>Scan</th><th>Actions</th></tr></thead>
     <tbody>
     {{range .Pending}}
       <tr>
@@ -17,6 +17,18 @@
         <td>{{.DisplayName}}</td>
         <td>{{.Submitter}}</td>
         <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+        <td>
+          {{if .Grants}}
+            <strong>{{.Grants.Kind}}</strong>
+            {{if .Grants.Classes}}<br><small>classes: {{range .Grants.Classes}}<code>{{.}}</code> {{end}}</small>{{end}}
+            {{if .Grants.Hosts}}<br><small>hosts: {{range .Grants.Hosts}}<code>{{.}}</code> {{end}}</small>{{end}}
+            {{if .Grants.Scopes}}<br><small>scopes: {{range .Grants.Scopes}}<code>{{.}}</code> {{end}}</small>{{end}}
+            {{if .Grants.MCPServers}}<br><small><mark>runs code</mark>: {{range .Grants.MCPServers}}<code>{{.}}</code> {{end}}</small>{{end}}
+            {{if .Grants.Lines}}<br><small>{{range .Grants.Lines}}{{.}}<br>{{end}}</small>{{end}}
+          {{else}}
+            <em>archive unreadable</em>
+          {{end}}
+        </td>
         <td>
           {{if .Scan}}
             {{.Scan.Verdict}}{{if not .Scan.TextOnlyOK}} (text-only check failed){{end}}

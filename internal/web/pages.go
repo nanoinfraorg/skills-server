@@ -834,6 +834,11 @@ func redirectWithOutcome(w http.ResponseWriter, r *http.Request, q url.Values) {
 type adminSubmissionRow struct {
 	submissionRow
 	Scan *store.Scan
+	// What approving this submission would allow, read from the archive itself.
+	// Nil when the archive could not be read -- the row still renders, because
+	// an unreadable archive is a thing an admin needs to see rather than a
+	// reason to hide the submission.
+	Grants *pipeline.Grants
 }
 
 // adminPageData is the data shape for admin.html.
@@ -866,6 +871,14 @@ func (h *Handler) Admin(w http.ResponseWriter, r *http.Request) {
 	rows := make([]adminSubmissionRow, 0, len(pending))
 	for _, sub := range pending {
 		row := adminSubmissionRow{submissionRow: toSubmissionRow(sub)}
+		// Re-read from the pending archive rather than from a stored summary:
+		// the archive is what would be published, and a summary can drift.
+		if result, err := pipeline.ValidateArchive(sub.ArchivePath, ""); err == nil {
+			grants := result.Describe()
+			row.Grants = &grants
+		} else {
+			h.Logger.Warn("could not describe pending archive", "error", err, "submission_id", sub.ID)
+		}
 		if sc, err := h.API.Store.GetLatestScan(ctx, store.ScanTargetSubmission, sub.ID); err == nil {
 			row.Scan = sc
 		} else if !errors.Is(err, store.ErrNotFound) {
