@@ -69,6 +69,13 @@ type SkillVersion struct {
 	// as Submission's fields of the same name.
 	Owner string
 	Risks string
+	// Kind is what a reader is installing: pipeline.KindSkill,
+	// KindAgentPlugin or KindConnector, read from the archive at approval
+	// time. A skill is text the agent reads; a connector declares requests a
+	// deployment will make with a live credential. The listing has to say
+	// which one, which is why this is stored rather than re-derived per
+	// request -- a search page would otherwise open every archive.
+	Kind string
 }
 
 // Skill is the thin "current version" pointer for one published skill_id.

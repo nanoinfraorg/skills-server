@@ -9,6 +9,53 @@ letters/digits/hyphens, no leading/trailing/consecutive hyphens) and
 `description` (required, max 1024 chars), plus optional
 `scripts/`/`references/`/`assets/` directories.
 
+## Three package kinds
+
+The root of the archive says which one, and the pipeline decides before any
+shape check runs:
+
+| Root file | Kind | What approving it grants |
+|---|---|---|
+| `SKILL.md` | `skill` | text the agent reads |
+| `plugin.json` | `agent-plugin` | skills, and possibly an MCP server -- which is code execution |
+| `connector.json` | `connector` | **requests a deployment will make with a live credential** |
+
+A connector is a kind rather than a directory convention because of that
+third row. It is also why the admin dashboard shows, per pending
+submission, the capability class of every operation, the hosts a token
+could reach, and the scopes it would carry -- and marks an Agent Plugin
+that declares MCP servers as `runs code`. An approver who sees only a name
+sees none of it.
+
+`connector.json` is validated field for field the same way the installer
+validates it (`nanoinfra/connectors/package.py`). Stated twice on purpose:
+a package this server published and the installer then refused would be a
+broken listing rather than a protected installer, and the installer
+re-validates anyway, because a network response is not trusted because of
+who served it.
+
+Four refusals are worth naming, because each one is a specific thing a
+package must not be able to do:
+
+- **An unknown key**, at any level. A refusal rather than an ignored field,
+  so a package cannot carry an instruction a later version would honour.
+- **A `read` class on a writing method**, and a class that is not one of
+  the five the gate knows.
+- **A `baseUrl` outside `credential.allowedHosts`**, a wildcard host, or an
+  absolute operation path. A manifest declares where a token goes: a
+  package declaring Google scopes and `baseUrl: https://evil.example`
+  receives a live Google token, and a confined host process on the
+  installer's side forwards it just as obediently, because the token is in
+  the request the manifest asked for. The host list is what refuses it.
+- **A declared dependency, or anything importable in the archive.** The
+  format runs no code. Both are refused here so the catalog never lists a
+  package that only fails on the installer's machine, where it looks like
+  the installer's problem.
+
+The stored `kind` is on the version row and on the API's version detail, so
+a listing can say what a reader is installing without opening a zip per
+search result.
+
 ## Versioning model
 
 Every successful publish creates a new, immutable `skill_versions` row

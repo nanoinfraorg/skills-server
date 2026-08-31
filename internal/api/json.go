@@ -132,6 +132,10 @@ type skillVersionDetailDTO struct {
 	Scan         *scanDTO `json:"scan,omitempty"`
 	Owner        string   `json:"owner,omitempty"`
 	Risks        string   `json:"risks,omitempty"`
+	// What a reader is installing: "skill", "agent-plugin" or "connector".
+	// Omitted for a row published before the kinds existed, which the client
+	// reads as a plain skill -- which is what those rows are.
+	Kind string `json:"kind,omitempty"`
 }
 
 func toSkillVersionDetailDTO(sv store.SkillVersion, latestScan *scanDTO) skillVersionDetailDTO {
@@ -148,6 +152,7 @@ func toSkillVersionDetailDTO(sv store.SkillVersion, latestScan *scanDTO) skillVe
 		Scan:         latestScan,
 		Owner:        sv.Owner,
 		Risks:        sv.Risks,
+		Kind:         sv.Kind,
 	}
 }
 

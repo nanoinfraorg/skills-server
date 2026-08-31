@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS skill_versions (
 	search_text   TEXT NOT NULL,
 	owner         TEXT NOT NULL DEFAULT '',
 	risks         TEXT NOT NULL DEFAULT '',
+	-- What a reader is installing: "skill", "agent-plugin" or "connector" (see
+	-- pipeline.Kind*). Defaulting to "skill" backfills every row published
+	-- before the kinds existed, which is what those rows were.
+	kind          TEXT NOT NULL DEFAULT 'skill',
 	UNIQUE (skill_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_id ON skill_versions(skill_id);
@@ -149,6 +153,14 @@ const sessionsCSRFMigration = `ALTER TABLE sessions ADD COLUMN csrf_token TEXT N
 // (empty string means "not provided"), so defaulting to the empty string
 // backfills every pre-existing row with the same "unset" value a brand-new
 // row would get.
+// kindMigration adds the kind column to a skill_versions table created before
+// the third package kind existed. Same shape and same reasoning as the two
+// migrations above: schema's CREATE TABLE IF NOT EXISTS only applies to a new
+// table, SQLite has no ADD COLUMN IF NOT EXISTS, and the duplicate-column error
+// from a second run is ignored. The default backfills existing rows as "skill",
+// which is what every row published before this was.
+const kindMigration = `ALTER TABLE skill_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'skill';`
+
 var ownerRisksMigrations = []string{
 	`ALTER TABLE submissions ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
 	`ALTER TABLE submissions ADD COLUMN risks TEXT NOT NULL DEFAULT '';`,
@@ -182,6 +194,10 @@ func Open(dbPath string) (*Store, error) {
 	if _, err := db.Exec(sessionsCSRFMigration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return nil, fmt.Errorf("apply csrf_token migration: %w", err)
+	}
+	if _, err := db.Exec(kindMigration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("apply kind migration: %w", err)
 	}
 	for _, migration := range ownerRisksMigrations {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -322,10 +338,10 @@ func (s *Store) MaxVersion(ctx context.Context, skillID string) (int64, error) {
 func (s *Store) CreateSkillVersion(ctx context.Context, sv SkillVersion) (int64, error) {
 	searchText := strings.ToLower(sv.SkillID + " " + sv.DisplayName + " " + sv.Description)
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO skill_versions (skill_id, version, submission_id, display_name, description, github_path, published_at, status, search_text, owner, risks)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO skill_versions (skill_id, version, submission_id, display_name, description, github_path, published_at, status, search_text, owner, risks, kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sv.SkillID, sv.Version, sv.SubmissionID, sv.DisplayName, sv.Description, sv.GitHubPath,
-		formatTime(sv.PublishedAt), string(sv.Status), searchText, sv.Owner, sv.Risks,
+		formatTime(sv.PublishedAt), string(sv.Status), searchText, sv.Owner, sv.Risks, sv.Kind,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert skill version: %w", err)
@@ -340,7 +356,7 @@ func (s *Store) CreateSkillVersion(ctx context.Context, sv SkillVersion) (int64,
 // GetSkillVersion fetches one specific version of skillID.
 func (s *Store) GetSkillVersion(ctx context.Context, skillID string, version int64) (*SkillVersion, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks, kind
 		FROM skill_versions WHERE skill_id = ? AND version = ?`, skillID, version)
 	sv, err := scanSkillVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -359,7 +375,7 @@ func (s *Store) GetSkillVersion(ctx context.Context, skillID string, version int
 // skill_id/version pair to call SetSkillVersionStatus.
 func (s *Store) GetSkillVersionByID(ctx context.Context, id int64) (*SkillVersion, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks, kind
 		FROM skill_versions WHERE id = ?`, id)
 	sv, err := scanSkillVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -374,7 +390,7 @@ func (s *Store) GetSkillVersionByID(ctx context.Context, id int64) (*SkillVersio
 // ListSkillVersions returns every version of skillID, newest first.
 func (s *Store) ListSkillVersions(ctx context.Context, skillID string) ([]SkillVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks
+		SELECT id, skill_id, version, submission_id, display_name, description, github_path, published_at, status, owner, risks, kind
 		FROM skill_versions WHERE skill_id = ? ORDER BY version DESC`, skillID)
 	if err != nil {
 		return nil, fmt.Errorf("list skill versions: %w", err)
@@ -884,7 +900,7 @@ func scanSkillVersion(row rowScanner) (*SkillVersion, error) {
 	var publishedAt, status string
 	if err := row.Scan(
 		&sv.ID, &sv.SkillID, &sv.Version, &sv.SubmissionID, &sv.DisplayName, &sv.Description,
-		&sv.GitHubPath, &publishedAt, &status, &sv.Owner, &sv.Risks,
+		&sv.GitHubPath, &publishedAt, &status, &sv.Owner, &sv.Risks, &sv.Kind,
 	); err != nil {
 		return nil, err
 	}

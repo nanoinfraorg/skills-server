@@ -189,6 +189,9 @@ func (h *Handler) ApproveSubmissionCore(ctx context.Context, id string) (*Approv
 		Status:       store.SkillVersionPublished,
 		Owner:        sub.Owner,
 		Risks:        sub.Risks,
+		// Read from the archive that was just validated, so the listing can say what a reader
+		// is installing rather than making every search open a zip.
+		Kind: result.Kind,
 	}
 	skillVersionID, err := h.Store.CreateSkillVersion(ctx, skillVersion)
 	if err != nil {
