@@ -54,7 +54,10 @@ type skillsSortLink struct {
 // skillsPageData is the data shape for skills.html (the public directory).
 type skillsPageData struct {
 	basePage
-	Query    string
+	Query string
+	// Kind is the active filter, empty for every kind. Kinds are the tabs.
+	Kind     string
+	Kinds    []skillsKindLink
 	Skills   []store.SkillDetail
 	Trending bool // true when Query is empty, so the page can say so
 	Total    int
@@ -82,10 +85,57 @@ var directorySorts = []struct {
 // directoryURL builds a /skills link preserving the parameters that are not
 // being changed. Empty and default values are omitted so the common case stays
 // a clean "/skills".
-func directoryURL(query string, sort store.SkillSort, desc bool, page int) string {
+// directoryKinds are the tabs the directory offers. One entry per package kind
+// plus "All", because a catalog that carries three kinds and offers no way to
+// see one of them is a catalog whose third kind is hard to find.
+var directoryKinds = []struct {
+	Key   string
+	Label string
+}{
+	{Key: "", Label: "All"},
+	{Key: "skill", Label: "Skills"},
+	{Key: pipeline.KindConnector, Label: "Connectors"},
+	{Key: pipeline.KindAgentPlugin, Label: "Plugins"},
+}
+
+func directoryKindKnown(kind string) bool {
+	for _, k := range directoryKinds {
+		if k.Key == kind && k.Key != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// directoryTitle names the page after what it is showing, so a filtered view
+// does not keep a title that contradicts the rows under it.
+func directoryTitle(kind string) string {
+	switch kind {
+	case pipeline.KindConnector:
+		return "Browse connectors"
+	case pipeline.KindAgentPlugin:
+		return "Browse plugins"
+	case "skill":
+		return "Browse skills"
+	default:
+		return "Browse the catalog"
+	}
+}
+
+// skillsKindLink is one kind tab, rendered by skills.html.
+type skillsKindLink struct {
+	Label  string
+	URL    string
+	Active bool
+}
+
+func directoryURL(query, kind string, sort store.SkillSort, desc bool, page int) string {
 	values := url.Values{}
 	if query != "" {
 		values.Set("q", query)
+	}
+	if kind != "" {
+		values.Set("kind", kind)
 	}
 	if sort != store.SkillSortDownloads {
 		values.Set("sort", string(sort))
@@ -110,6 +160,14 @@ func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFromRequest(r)
 	q := r.URL.Query()
 	query := strings.TrimSpace(q.Get("q"))
+
+	// An unknown kind falls back to every kind, for the same reason an unknown
+	// sort key does: this page is reached from shared links, and a bogus value
+	// should show the catalog rather than an error.
+	kind := q.Get("kind")
+	if !directoryKindKnown(kind) {
+		kind = ""
+	}
 
 	// An unknown sort key falls back to downloads rather than erroring: this is
 	// a public page reached from shared links, and the store maps the value to a
@@ -139,8 +197,8 @@ func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 
-	result, err := h.API.Store.ListPublishedSkills(
-		r.Context(), query, sort, desc, directoryPageSize, (page-1)*directoryPageSize,
+	result, err := h.API.Store.ListPublishedSkillsOfKind(
+		r.Context(), query, kind, sort, desc, directoryPageSize, (page-1)*directoryPageSize,
 	)
 	if err != nil {
 		h.Logger.Error("list skills for directory page", "error", err, "query", query)
@@ -155,7 +213,7 @@ func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 	// A page number past the end would render an empty table with a working
 	// pager, which reads as "the catalog is empty". Send it to the last page.
 	if page > pages {
-		http.Redirect(w, r, directoryURL(query, sort, desc, pages), http.StatusSeeOther)
+		http.Redirect(w, r, directoryURL(query, kind, sort, desc, pages), http.StatusSeeOther)
 		return
 	}
 
@@ -171,7 +229,7 @@ func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 		sorts = append(sorts, skillsSortLink{
 			Key:    string(s.Key),
 			Label:  s.Label,
-			URL:    directoryURL(query, s.Key, next, 1),
+			URL:    directoryURL(query, kind, s.Key, next, 1),
 			Active: active,
 			Desc:   desc,
 		})
@@ -184,15 +242,26 @@ func (h *Handler) Skills(w http.ResponseWriter, r *http.Request) {
 	}
 	prev, nextURL := "", ""
 	if page > 1 {
-		prev = directoryURL(query, sort, desc, page-1)
+		prev = directoryURL(query, kind, sort, desc, page-1)
 	}
 	if page < pages {
-		nextURL = directoryURL(query, sort, desc, page+1)
+		nextURL = directoryURL(query, kind, sort, desc, page+1)
+	}
+
+	kinds := make([]skillsKindLink, 0, len(directoryKinds))
+	for _, k := range directoryKinds {
+		kinds = append(kinds, skillsKindLink{
+			Label:  k.Label,
+			URL:    directoryURL(query, k.Key, sort, desc, 1),
+			Active: k.Key == kind,
+		})
 	}
 
 	h.render(w, http.StatusOK, "skills.html", skillsPageData{
-		basePage: basePage{Title: "Browse skills", User: navUser(sess)},
+		basePage: basePage{Title: directoryTitle(kind), User: navUser(sess)},
 		Query:    query,
+		Kind:     kind,
+		Kinds:    kinds,
 		Skills:   result.Skills,
 		Trending: query == "",
 		Total:    result.Total,
@@ -260,6 +329,16 @@ type skillDetailPageData struct {
 	// h.API.GitHubRepo isn't configured, in which case the template falls
 	// back to a non-linked version of the same sentence.
 	RepoLink string
+	// Grants is what installing this package would allow, read from the
+	// published archive rather than from a stored summary -- the archive is
+	// what a visitor downloads, and a summary can drift from it.
+	//
+	// It is on the public page and not only the admin one because for a
+	// connector this *is* the card: the badge tells a reader there is
+	// something to check, and without the operations, their capability
+	// classes, the hosts a token could reach and the scopes it would carry,
+	// checking would mean downloading the zip.
+	Grants *pipeline.Grants
 }
 
 // securityAudit is one named security check's result, for the detail
@@ -389,6 +468,10 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Warn("load skill contents for detail page", "error", err, "skill_id", id)
 	}
 
+	// What installing it would allow. Same source as the file listing above, so
+	// one unreadable archive costs both rather than one of them silently.
+	grants := h.publishedGrants(skill.SkillID)
+
 	// The current version's row id (not its user-facing version number) is
 	// what scans.target_id and virustotal_scans.skill_version_id actually
 	// store -- find it in the already-fetched version history rather than
@@ -443,7 +526,23 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 		Files:          files,
 		SecurityAudits: audits,
 		RepoLink:       repoLink(h.API.GitHubRepo, skill.GitHubPath),
+		Grants:         grants,
 	})
+}
+
+// publishedGrants reads what a published package would allow from its archived
+// copy. Nil when the archive cannot be read, which the template renders as
+// nothing rather than as an empty table -- an absent answer and "grants
+// nothing" are different statements.
+func (h *Handler) publishedGrants(skillID string) *pipeline.Grants {
+	archivePath := filepath.Join(h.API.PublishedDir, skillID+".zip")
+	result, err := pipeline.ValidateArchive(archivePath, "")
+	if err != nil {
+		h.Logger.Warn("describe published archive", "error", err, "skill_id", skillID)
+		return nil
+	}
+	grants := result.Describe()
+	return &grants
 }
 
 // repoLink builds a link to a skill's own path in the published GitHub

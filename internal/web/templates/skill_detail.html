@@ -27,6 +27,49 @@
 <p>{{.Skill.Description}}</p>
 <p><small>{{.Skill.Downloads}} download{{if ne .Skill.Downloads 1}}s{{end}} &middot; published {{.Skill.PublishedAt.Format "2006-01-02"}}</small></p>
 
+{{if and .Grants .Grants.Lines}}
+  {{/* For a connector this is the card: the badge says there is something to
+       check, and without this a reader would have to download the zip to do
+       it. Read from the published archive, so it cannot drift from what a
+       visitor actually installs. */}}
+  <h2>What this grants</h2>
+  {{if eq .Grants.Kind "connector"}}
+    <table>
+      <thead><tr><th>Operation</th><th>Capability class</th><th>Call</th></tr></thead>
+      <tbody>
+      {{range .Grants.Operations}}
+        <tr>
+          <td><code>{{.Name}}</code></td>
+          <td><span class="grant__class grant__class--{{.ClassSlug}}">{{.Class}}</span></td>
+          <td><code>{{.Method}} {{.Path}}</code></td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <ul>
+      {{if .Grants.Hosts}}
+        <li><strong>Hosts it may address:</strong>
+          {{range .Grants.Hosts}}<code>{{.}}</code> {{end}}
+          <br><small>A credential bound to these hosts is what stops this package sending a token anywhere else.</small>
+        </li>
+      {{end}}
+      {{if .Grants.Scopes}}
+        <li><strong>Scopes a token would carry:</strong> {{range .Grants.Scopes}}<code>{{.}}</code> {{end}}</li>
+      {{else}}
+        <li><strong>No credential.</strong> This connector needs none, so no token is minted and none is sent.</li>
+      {{end}}
+    </ul>
+  {{else}}
+    <ul>
+      {{range .Grants.Lines}}<li>{{.}}</li>{{end}}
+      {{if .Grants.MCPServers}}
+        <li><mark>Runs code:</mark> this package declares the MCP server{{if ne (len .Grants.MCPServers) 1}}s{{end}}
+          {{range .Grants.MCPServers}}<code>{{.}}</code> {{end}} — approving it means approving code execution.</li>
+      {{end}}
+    </ul>
+  {{end}}
+{{end}}
+
 <h2>Skill Card</h2>
 <ul>
   {{if .Skill.Owner}}<li><strong>Owner:</strong> {{if .User}}{{.Skill.Owner}}{{else}}<span title="Sign in to view">hidden -- sign in to view</span>{{end}}</li>{{end}}

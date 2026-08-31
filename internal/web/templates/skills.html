@@ -1,13 +1,25 @@
 {{define "content"}}
 <p class="eyebrow">Marketplace</p>
-<h1>Browse skills</h1>
+<h1>{{.Title}}</h1>
 
 <form method="get" action="/skills" role="search">
   <fieldset role="group">
-    <input type="search" name="q" value="{{.Query}}" placeholder="Search skills...">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Search the catalog...">
+    {{/* The active filter survives a search: searching inside Connectors and
+         landing back in every kind would silently widen what you asked for. */}}
+    {{if .Kind}}<input type="hidden" name="kind" value="{{.Kind}}">{{end}}
     <input type="submit" value="Search">
   </fieldset>
 </form>
+
+{{/* One tab per package kind. A skill is text the agent reads; a connector
+     declares requests made with a live credential; a plugin may run code. */}}
+<nav class="kinds" aria-label="Package kind">
+  {{range .Kinds}}
+    <a href="{{.URL}}" class="kinds__tab{{if .Active}} is-active{{end}}"
+       {{if .Active}}aria-current="page"{{end}}>{{.Label}}</a>
+  {{end}}
+</nav>
 
 {{if .Skills}}
   <p class="directory__count">
@@ -16,7 +28,8 @@
       for &ldquo;{{.Query}}&rdquo;.
       <a href="/skills">Clear search</a>
     {{else}}
-      Showing <strong>{{.From}}&ndash;{{.To}}</strong> of <strong>{{.Total}}</strong> published skills.
+      Showing <strong>{{.From}}&ndash;{{.To}}</strong> of <strong>{{.Total}}</strong>
+      published {{if eq .Kind "connector"}}connectors{{else if eq .Kind "agent-plugin"}}plugins{{else if eq .Kind "skill"}}skills{{else}}packages{{end}}.
     {{end}}
   </p>
 
@@ -80,9 +93,14 @@
   {{end}}
 {{else}}
   {{if .Query}}
-    <p><em>No skills match &ldquo;{{.Query}}&rdquo;.</em> <a href="/skills">Browse all skills</a></p>
+    <p><em>Nothing matches &ldquo;{{.Query}}&rdquo;.</em> <a href="/skills">Browse the whole catalog</a></p>
+  {{else if .Kind}}
+    {{/* An empty filter says which one is empty. "Nothing published yet" on a
+         catalog with fourteen skills in it would read as broken. */}}
+    <p><em>No {{if eq .Kind "connector"}}connectors{{else if eq .Kind "agent-plugin"}}plugins{{else}}skills{{end}}
+    published yet.</em> <a href="/skills">Browse the whole catalog</a></p>
   {{else}}
-    <p><em>No skills published yet.</em></p>
+    <p><em>Nothing published yet.</em></p>
   {{end}}
 {{end}}
 {{end}}

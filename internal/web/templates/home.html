@@ -3,8 +3,8 @@
   <h1>Welcome, {{.User.Email}}</h1>
   <p>You're signed in as <strong>{{.User.Role}}</strong>.</p>
   <ul>
-    <li><a href="/skills">Browse skills</a></li>
-    <li><a href="/submit">Submit a skill</a></li>
+    <li><a href="/skills">Browse the catalog</a></li>
+    <li><a href="/submit">Submit a package</a></li>
     <li><a href="/my/submissions">My submissions</a></li>
     {{if .User.IsAdmin}}<li><a href="/admin">Admin dashboard</a></li>{{end}}
   </ul>
@@ -13,9 +13,13 @@
     <p class="eyebrow">Open source &middot; self-hosted &middot; scanned before it ships</p>
     <h1>skills-server</h1>
     <p>
-      A self-hosted Agent Skills marketplace: browse published skills, submit
-      your own, and track their review status. Signing in with Google is also
-      how you submit a skill for the first time -- there's no separate sign-up.
+      A self-hosted marketplace for three kinds of package: <strong>skills</strong>,
+      which are text your agent reads; <strong>connectors</strong>, which declare
+      the requests it may make with a credential and the hosts it may address; and
+      <strong>Agent Plugins</strong>, which bundle skills and may declare an MCP
+      server. Browse them, submit your own, and track their review status. Signing
+      in with Google is also how you submit for the first time -- there's no
+      separate sign-up.
     </p>
     <p>
       <a href="/auth/google/login" role="button">Sign in with Google</a>
@@ -26,11 +30,11 @@
   <div class="grid features">
     <article>
       <h3>Scanned before it ships</h3>
-      <p><small>Every skill passes a static/LLM security shield plus a VirusTotal multi-engine sweep before it's trusted.</small></p>
+      <p><small>Every package passes a static/LLM security shield plus a VirusTotal multi-engine sweep before it's trusted. A connector is also checked against its own declaration: a read class on a writing method, or a base URL outside the hosts it named, is refused rather than published.</small></p>
     </article>
     <article>
       <h3>Nothing hidden</h3>
-      <p><small>See the exact SKILL.md, file listing, owner, and known risks for every published version -- no black boxes.</small></p>
+      <p><small>See the exact SKILL.md, file listing, owner and known risks for every version -- and for a connector, every operation with its capability class, the hosts a token could reach, and the scopes it would carry. Before you install it.</small></p>
     </article>
     <article>
       <h3>Yours to run</h3>

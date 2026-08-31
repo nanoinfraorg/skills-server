@@ -96,12 +96,31 @@ type Result struct {
 // class each, its hosts say where a token could go, and its scopes say what that
 // token would carry. An approver who sees only a name sees none of that.
 type Grants struct {
-	Kind       string
-	Lines      []string
+	Kind  string
+	Lines []string
+	// Operations is the same information as Lines, split into fields, because
+	// the public detail page renders a table and a template should not be
+	// parsing a string back apart to do it.
+	Operations []GrantOperation
 	Classes    []string
 	Hosts      []string
 	Scopes     []string
 	MCPServers []string
+}
+
+// GrantOperation is one row of a connector's "what this grants" table.
+type GrantOperation struct {
+	Name   string
+	Class  string
+	Method string
+	Path   string
+}
+
+// ClassSlug is Class with the dot replaced, for a CSS class name. A template
+// cannot do this, and a second field on the pipeline result would be a
+// presentation detail stored twice.
+func (o GrantOperation) ClassSlug() string {
+	return strings.ReplaceAll(o.Class, ".", "-")
 }
 
 // Describe reports what approving this archive would allow.
@@ -109,11 +128,12 @@ func (r *Result) Describe() Grants {
 	switch r.Kind {
 	case KindConnector:
 		return Grants{
-			Kind:    KindConnector,
-			Lines:   r.ConnectorOperations,
-			Classes: r.ConnectorClasses,
-			Hosts:   r.ConnectorHosts,
-			Scopes:  r.ConnectorScopes,
+			Kind:       KindConnector,
+			Lines:      r.ConnectorOperations,
+			Operations: grantOperations(r.ConnectorOperations),
+			Classes:    r.ConnectorClasses,
+			Hosts:      r.ConnectorHosts,
+			Scopes:     r.ConnectorScopes,
 		}
 	case KindAgentPlugin:
 		lines := make([]string, 0, len(r.Skills))
@@ -124,6 +144,26 @@ func (r *Result) Describe() Grants {
 	default:
 		return Grants{Kind: KindSkill, Lines: []string{"skill " + r.Metadata.Name}}
 	}
+}
+
+// grantOperations splits the review lines validateConnectorOperations wrote --
+// "<class> <METHOD> <path> <name>" -- back into fields. One producer, one
+// consumer, and the format is asserted by the tests either side of it.
+func grantOperations(lines []string) []GrantOperation {
+	out := make([]GrantOperation, 0, len(lines))
+	for _, line := range lines {
+		parts := strings.SplitN(line, " ", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		out = append(out, GrantOperation{
+			Class:  parts[0],
+			Method: parts[1],
+			Path:   parts[2],
+			Name:   parts[3],
+		})
+	}
+	return out
 }
 
 // ValidationError is a safe, user-facing description of why an archive was

@@ -575,11 +575,34 @@ type SkillPage struct {
 func (s *Store) ListPublishedSkills(
 	ctx context.Context, query string, sort SkillSort, desc bool, limit, offset int,
 ) (*SkillPage, error) {
+	return s.ListPublishedSkillsOfKind(ctx, query, "", sort, desc, limit, offset)
+}
+
+// ListPublishedSkillsOfKind is ListPublishedSkills narrowed to one package kind.
+//
+// An empty kind means every kind, and the value is compared rather than
+// interpolated, so a hand-edited query string cannot reach the SQL. A kind
+// nobody has published yields an empty page rather than an error: the directory
+// is a public page reached from shared links.
+func (s *Store) ListPublishedSkillsOfKind(
+	ctx context.Context, query, kind string, sort SkillSort, desc bool, limit, offset int,
+) (*SkillPage, error) {
 	where := "WHERE sv.status != ?"
 	args := []any{string(SkillVersionQuarantined)}
 	if query != "" {
 		where += " AND sv.search_text LIKE ?"
 		args = append(args, "%"+strings.ToLower(query)+"%")
+	}
+	if kind != "" {
+		// `kind = ''` is the pre-kinds default in the column, and those rows are
+		// skills -- so filtering for skills has to accept both spellings rather
+		// than hiding everything published before the third kind existed.
+		if kind == "skill" {
+			where += " AND (sv.kind = ? OR sv.kind = '')"
+		} else {
+			where += " AND sv.kind = ?"
+		}
+		args = append(args, kind)
 	}
 
 	var total int
