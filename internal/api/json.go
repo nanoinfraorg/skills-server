@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/nanoinfraorg/skills-server/internal/pipeline"
 	"github.com/nanoinfraorg/skills-server/internal/scan"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
@@ -72,6 +73,57 @@ type skillDTO struct {
 	// Omitted for a row published before the kinds existed, which a client
 	// reads as a plain skill -- which is what those rows are.
 	Kind string `json:"kind,omitempty"`
+	// What installing this package would allow, read from the archive rather
+	// than stored (#207). Only the detail endpoint fills it: search and
+	// trending would each have to open every archive to answer, and a client
+	// listing a catalog is not yet deciding anything.
+	//
+	// Absent and "grants nothing" are different statements, so this is a
+	// pointer: a client that cannot read the grants must not render an empty
+	// table as though the package asked for nothing.
+	Grants *grantsDTO `json:"grants,omitempty"`
+}
+
+// grantsDTO is what a client needs to show before an install: the operations a
+// connector would perform with a live credential, the hosts a token could
+// reach, and the scopes that token would carry.
+type grantsDTO struct {
+	Kind       string              `json:"kind"`
+	Operations []grantOperationDTO `json:"operations,omitempty"`
+	Classes    []string            `json:"classes,omitempty"`
+	Hosts      []string            `json:"hosts,omitempty"`
+	Scopes     []string            `json:"scopes,omitempty"`
+	MCPServers []string            `json:"mcp_servers,omitempty"`
+}
+
+type grantOperationDTO struct {
+	Name   string `json:"name"`
+	Class  string `json:"class"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+}
+
+func toGrantsDTO(g *pipeline.Grants) *grantsDTO {
+	if g == nil {
+		return nil
+	}
+	operations := make([]grantOperationDTO, 0, len(g.Operations))
+	for _, op := range g.Operations {
+		operations = append(operations, grantOperationDTO{
+			Name:   op.Name,
+			Class:  op.Class,
+			Method: op.Method,
+			Path:   op.Path,
+		})
+	}
+	return &grantsDTO{
+		Kind:       g.Kind,
+		Operations: operations,
+		Classes:    g.Classes,
+		Hosts:      g.Hosts,
+		Scopes:     g.Scopes,
+		MCPServers: g.MCPServers,
+	}
 }
 
 func toSkillDTO(s store.SkillDetail) skillDTO {

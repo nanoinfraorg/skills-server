@@ -148,13 +148,19 @@ curl -X POST http://localhost:8080/api/v1/admin/skills/pdf-editor/rescan \
 
 `200 OK`: `{"scan": { ... }, "quarantined": false}`.
 
-### `GET /api/v1/search?q=...`
+### `GET /api/v1/search?q=...&kind=...`
 
 No auth. Case-insensitive substring search over published,
-non-quarantined skills.
+non-quarantined skills. Every row carries `kind` — `skill`,
+`agent-plugin` or `connector` — omitted on rows published before the
+kinds existed, which a client reads as a plain skill.
+
+`kind` narrows the result. Its absence does not filter, so a client that
+predates the parameter still sees the whole catalog.
 
 ```bash
 curl "http://localhost:8080/api/v1/search?q=pdf"
+curl "http://localhost:8080/api/v1/search?q=crm&kind=connector"
 ```
 
 ### `GET /api/v1/trending`
@@ -170,6 +176,37 @@ curl http://localhost:8080/api/v1/trending
 No auth. Current version's detail; `404` if not found/published. A
 quarantined current version still returns, with `"status":
 "quarantined"`.
+
+Carries `grants`: what installing this package would allow, read from the
+archived copy rather than stored, because the archive is the authority and
+a stored summary can drift from it.
+
+```json
+{
+  "skill_id": "acme-crm",
+  "kind": "connector",
+  "grants": {
+    "kind": "connector",
+    "operations": [
+      {"name": "create_contact", "class": "mutate.remote", "method": "POST", "path": "/v1/contacts"},
+      {"name": "list_contacts", "class": "read", "method": "GET", "path": "/v1/contacts"}
+    ],
+    "classes": ["read", "mutate.remote"],
+    "hosts": ["api.acme.example"],
+    "scopes": ["crm.read", "crm.write"]
+  }
+}
+```
+
+Two properties a client should rely on:
+
+- **`grants` is absent, not empty, when the archive cannot be read.** An
+  absent answer and "this package asks for nothing" are different
+  statements, and rendering the first as the second is how an install
+  screen understates what it is about to allow.
+- **Only this endpoint carries it.** Search and trending would each have to
+  open every archive to answer, and a client listing a catalog is not yet
+  deciding anything.
 
 ```bash
 curl http://localhost:8080/api/v1/skills/pdf-editor

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nanoinfraorg/skills-server/internal/pipeline"
 	"github.com/nanoinfraorg/skills-server/internal/store"
 )
 
@@ -20,6 +21,27 @@ func (h *Handler) SearchSkills(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "q is required")
+		return
+	}
+
+	// A client browsing for one kind asks for that kind, rather than fetching the catalog and
+	// filtering what it did not want -- which is what a page showing only connectors would
+	// otherwise do, one archive of bandwidth at a time (#207).
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind != "" {
+		page, err := h.Store.ListPublishedSkillsOfKind(
+			r.Context(), query, kind, store.SkillSortDownloads, true, trendingLimit, 0,
+		)
+		if err != nil {
+			h.Logger.Error("search skills of kind", "error", err, "kind", kind)
+			writeError(w, http.StatusInternalServerError, "search failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"query":  query,
+			"kind":   kind,
+			"skills": toSkillDTOs(page.Skills),
+		})
 		return
 	}
 
@@ -60,7 +82,28 @@ func (h *Handler) GetSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not load skill")
 		return
 	}
-	writeJSON(w, http.StatusOK, toSkillDTO(*skill))
+	dto := toSkillDTO(*skill)
+	// Read from the archive here and nowhere else: this is the endpoint a client calls when it is
+	// about to decide, and `credential.allowedHosts` is the field that decides whether a hostile
+	// manifest gets a live token. A catalog listing is not yet deciding anything (#207).
+	dto.Grants = toGrantsDTO(h.PublishedGrants(skill.SkillID))
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// PublishedGrants reads what a published package would allow from its archived copy. Nil when the
+// archive cannot be read, which a client renders as nothing rather than as an empty table: an
+// absent answer and "grants nothing" are different statements.
+//
+// Exported because the HTML detail page needs the same answer, and the archive path belongs to
+// whoever owns PublishedDir.
+func (h *Handler) PublishedGrants(skillID string) *pipeline.Grants {
+	result, err := pipeline.ValidateArchive(filepath.Join(h.PublishedDir, skillID+".zip"), "")
+	if err != nil {
+		h.Logger.Warn("describe published archive", "error", err, "skill_id", skillID)
+		return nil
+	}
+	grants := result.Describe()
+	return &grants
 }
 
 // ListSkillVersions returns every version of one skill's history, newest

@@ -531,18 +531,11 @@ func (h *Handler) SkillDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishedGrants reads what a published package would allow from its archived
-// copy. Nil when the archive cannot be read, which the template renders as
-// nothing rather than as an empty table -- an absent answer and "grants
-// nothing" are different statements.
+// copy. Delegated to the JSON API's handler, which needs the same answer for
+// GET /api/v1/skills/{id} (#207) -- two copies of "open the archive and
+// describe it" would be two places for the archive path to be wrong.
 func (h *Handler) publishedGrants(skillID string) *pipeline.Grants {
-	archivePath := filepath.Join(h.API.PublishedDir, skillID+".zip")
-	result, err := pipeline.ValidateArchive(archivePath, "")
-	if err != nil {
-		h.Logger.Warn("describe published archive", "error", err, "skill_id", skillID)
-		return nil
-	}
-	grants := result.Describe()
-	return &grants
+	return h.API.PublishedGrants(skillID)
 }
 
 // repoLink builds a link to a skill's own path in the published GitHub
