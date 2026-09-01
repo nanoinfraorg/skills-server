@@ -33,6 +33,23 @@ gofmt -l .      # should print nothing
 go test ./... -count=1
 ```
 
+## Changelog and releases
+
+[`CHANGELOG.md`](CHANGELOG.md) is the record of what changed, in
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) form. A release body is that file's
+section for the version, read by CI rather than written twice.
+
+**A change writes its own entry, in the same commit, under `## [Unreleased]`.** One line per change
+a consumer of this catalog can observe, naming the effect and not the mechanism. Categories, in this
+order and only the ones a version needs: Added, Changed, Deprecated, Removed, Fixed, Security.
+
+Releasing means renaming `Unreleased` to the version with today's date and opening a fresh one. A
+tag whose version has no section, or whose section is empty, fails CI before an image is pushed —
+four releases here shipped with a body that was a broken image line and a compare link, which is
+what that gate exists to prevent.
+
+Do not tag unless it was asked for. Landed work waits in `Unreleased` at no cost.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) -- Agent Skill format, versioning
