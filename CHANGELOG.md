@@ -11,6 +11,14 @@ belongs here rather than in a commit log nobody reads.
 
 ## [Unreleased]
 
+### Added
+
+- `GET /api/v1/skills`: the paginated directory of everything published, with the total a client
+  needs to draw a pager. Until now nothing answered *what the catalog publishes* — `trending`
+  returns a ranking of 20 and `search` refuses an empty `q` — so a client that wanted to browse
+  had to send people to this site instead.
+  ([#3](https://github.com/nanoinfraorg/skills-server/issues/3))
+
 ## [0.4.0] — 2026-08-31
 
 ### Added

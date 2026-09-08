@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -1237,5 +1238,101 @@ func TestApproveSubmission_CarriesOwnerAndRisksForwardToSkillVersion(t *testing.
 	}
 	if detail["risks"] != "Could exfiltrate data if misconfigured." {
 		t.Errorf("version detail risks = %v, want the submitted risks text", detail["risks"])
+	}
+}
+
+// TestListSkillsPaginates covers the endpoint the catalog never had (#3): a page of everything
+// published, with the total a client needs to draw a pager. Before it, `/api/v1/trending` was the
+// only listing and its 20 rows were a ranking rather than a page.
+func TestListSkillsPaginates(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	for i := 0; i < 25; i++ {
+		id := fmt.Sprintf("skill-%02d", i)
+		seedPublishedSkill(t, h, id, "Skill "+id, "one of many")
+	}
+
+	list := func(query string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/skills"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list%s status = %d, body: %s", query, rec.Code, rec.Body.String())
+		}
+		return decodeJSON[map[string]any](t, rec.Body)
+	}
+
+	// The total counts everything published, not what fits on the page -- which is the whole
+	// reason this endpoint exists rather than reading `len(skills)` off trending.
+	first := list("")
+	if got := first["total"].(float64); got != 25 {
+		t.Errorf("total = %v, want 25", got)
+	}
+	firstRows, _ := first["skills"].([]any)
+	if len(firstRows) != 20 {
+		t.Fatalf("default page = %d rows, want 20", len(firstRows))
+	}
+
+	// The offset moves the window and does not repeat the first page.
+	second := list("?limit=20&offset=20")
+	secondRows, _ := second["skills"].([]any)
+	if len(secondRows) != 5 {
+		t.Fatalf("second page = %d rows, want the remaining 5", len(secondRows))
+	}
+	seen := map[string]bool{}
+	for _, row := range firstRows {
+		seen[row.(map[string]any)["skill_id"].(string)] = true
+	}
+	for _, row := range secondRows {
+		if id := row.(map[string]any)["skill_id"].(string); seen[id] {
+			t.Errorf("%s appears on both pages", id)
+		}
+	}
+
+	// The cap is enforced, because a page size is a value a browser sent.
+	capped := list("?limit=5000")
+	if got := capped["limit"].(float64); got != maxPageLimit {
+		t.Errorf("limit = %v, want it clamped to %d", got, maxPageLimit)
+	}
+	cappedRows, _ := capped["skills"].([]any)
+	if len(cappedRows) != 25 {
+		t.Errorf("clamped page = %d rows, want all 25", len(cappedRows))
+	}
+
+	// A query narrows the same listing, so a client needs one endpoint rather than two.
+	narrowed := list("?q=skill-07")
+	if got := narrowed["total"].(float64); got != 1 {
+		t.Errorf("narrowed total = %v, want 1", got)
+	}
+}
+
+func TestListSkillsRejectsUnusablePaging(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+
+	for _, query := range []string{"?limit=0", "?limit=-1", "?limit=abc", "?offset=-1", "?offset=x"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/skills"+query, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", query, rec.Code)
+		}
+	}
+}
+
+// TestListSkillsIsDistinctFromTheDetailRoute pins that adding the collection route did not
+// shadow `GET /api/v1/skills/{id}`, which is the failure a pattern conflict would produce.
+func TestListSkillsIsDistinctFromTheDetailRoute(t *testing.T) {
+	h, _ := testHandler(t)
+	mux := NewMux(h)
+	seedPublishedSkill(t, h, "alpha", "Alpha", "first skill")
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/skills/alpha", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if detail := decodeJSON[map[string]any](t, rec.Body); detail["skill_id"] != "alpha" {
+		t.Errorf("detail skill_id = %v, want alpha", detail["skill_id"])
 	}
 }

@@ -161,6 +161,7 @@ func NewMux(h *Handler) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/scan/{id}", h.requireEitherAuth(h.GetScan))
 
 	mux.HandleFunc("GET /api/v1/search", h.SearchSkills)
+	mux.HandleFunc("GET /api/v1/skills", h.ListSkills)
 	mux.HandleFunc("GET /api/v1/trending", h.TrendingSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", h.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", h.DownloadSkill)

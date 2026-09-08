@@ -54,6 +54,81 @@ func (h *Handler) SearchSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"query": query, "skills": toSkillDTOs(skills)})
 }
 
+// maxPageLimit bounds ListSkills. Every value in that request came from a browser, and a page
+// size is the one that decides how much work one call does.
+const maxPageLimit = 100
+
+// ListSkills is the paginated directory of everything published (#3).
+//
+// Until this existed no endpoint answered *what the catalog publishes*: `/api/v1/trending` returns
+// a page of 20 and calls it a ranking, and `/api/v1/search` refuses an empty `q`. A client that
+// wanted to browse had nowhere to go, so nanoinfra's WebUI sent people to this site instead of
+// listing it in the app.
+//
+// The query behind it is the one the HTML directory already uses, so this is a handler and a JSON
+// shape rather than new logic -- including the total, without which a client cannot draw a pager.
+func (h *Handler) ListSkills(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	// Passed through rather than validated against a list of kinds, which is what search does:
+	// the store compares the value instead of interpolating it, and a kind nobody has published
+	// is an empty page rather than an error.
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+
+	sort := store.SkillSortDownloads
+	switch strings.TrimSpace(r.URL.Query().Get("sort")) {
+	case "recent":
+		sort = store.SkillSortRecent
+	case "name":
+		sort = store.SkillSortName
+	}
+	// Descending by default, because the default sort is downloads and nobody browses a catalog
+	// from its least-installed entry. `desc=false` asks for the other direction.
+	desc := strings.TrimSpace(r.URL.Query().Get("desc")) != "false"
+
+	limit := trendingLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = min(parsed, maxPageLimit)
+	}
+
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return
+		}
+		offset = parsed
+	}
+
+	page, err := h.Store.ListPublishedSkillsOfKind(
+		r.Context(), query, kind, sort, desc, limit, offset,
+	)
+	if err != nil {
+		h.Logger.Error("list published skills", "error", err, "kind", kind)
+		writeError(w, http.StatusInternalServerError, "could not list skills")
+		return
+	}
+
+	payload := map[string]any{
+		"skills": toSkillDTOs(page.Skills),
+		"total":  page.Total,
+		"limit":  limit,
+		"offset": offset,
+	}
+	if query != "" {
+		payload["query"] = query
+	}
+	if kind != "" {
+		payload["kind"] = kind
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
 // TrendingSkills returns published skills ordered by downloads descending,
 // excluding any whose current version is quarantined.
 func (h *Handler) TrendingSkills(w http.ResponseWriter, r *http.Request) {

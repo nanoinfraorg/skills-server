@@ -163,6 +163,32 @@ curl "http://localhost:8080/api/v1/search?q=pdf"
 curl "http://localhost:8080/api/v1/search?q=crm&kind=connector"
 ```
 
+### `GET /api/v1/skills`
+
+No auth. The paginated directory of everything published, and the endpoint to use for browsing —
+`/api/v1/trending` is a ranking of 20, not a page, and `/api/v1/search` refuses an empty `q`.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `q` | *(none)* | Case-insensitive substring over the same text `search` matches. Absent lists everything. |
+| `kind` | *(none)* | `skill`, `agent-plugin` or `connector`. Absent does not filter. |
+| `sort` | `downloads` | `downloads`, `recent` or `name`. An unknown value falls back to the default. |
+| `desc` | `true` | `desc=false` reverses it. |
+| `limit` | `20` | Clamped to 100. A non-positive or non-numeric value is a `400`. |
+| `offset` | `0` | A negative or non-numeric value is a `400`. |
+
+`total` counts every row matching `q` and `kind`, not the ones on this page — a client needs it to
+draw a pager, and it is why this exists rather than reading `len(skills)` off a ranking.
+
+```bash
+curl "http://localhost:8080/api/v1/skills?limit=20&offset=20"
+curl "http://localhost:8080/api/v1/skills?kind=connector&sort=name&desc=false"
+```
+
+```json
+{"skills": [{"skill_id": "acme-crm"}], "total": 43, "limit": 20, "offset": 20}
+```
+
 ### `GET /api/v1/trending`
 
 No auth. Published, non-quarantined skills ordered by downloads, top 20.
